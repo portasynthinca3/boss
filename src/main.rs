@@ -3,13 +3,14 @@
 #![no_main]
 #![no_std]
 #![feature(panic_info_message)]
+#![allow(dead_code)]
 
 mod mem_manager;
 mod hal;
 mod bosbaima;
 mod util;
 
-use core::panic::PanicInfo;
+use core::{arch::asm, panic::PanicInfo};
 use lazy_static::lazy_static;
 use uefi::{
     prelude::*,
@@ -22,7 +23,9 @@ use hal::serial::SerialLogger;
 fn panic_handler(info: &PanicInfo) -> ! {
     log::error!("EMULATOR PANIC at {}:", info.location().unwrap().clone());
     log::error!("{}", info.message().unwrap().clone());
-    loop { }
+    loop {
+        unsafe { asm!("hlt"); }
+    }
 }
 
 lazy_static! {
@@ -48,5 +51,10 @@ fn main(image_handle: Handle, system_table: SystemTable<Boot>) -> Status {
     // initialize PMM
     mem_manager::phys::init(&mem_map);
 
-    loop { }
+    // initialize VMM
+    let cr3 = mem_manager::virt::init(&mem_map);
+
+    loop {
+        unsafe { asm!("hlt"); }
+    }
 }

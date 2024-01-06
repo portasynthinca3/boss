@@ -8,7 +8,7 @@
 use core::{mem::{size_of, size_of_val}, ops::Range};
 use uefi::table::boot::{MemoryMap, MemoryDescriptor, MemoryType};
 use spin::RwLock;
-use crate::mem_manager::{ByteSize, PhysAddr};
+use crate::mem_manager::{ByteSize, PhysAddr, PAGE_SIZE};
 use crate::util::dyn_arr::{DYN_ARR_CAPACITY, DynArr};
 
 /// This struct appears at the start of every page range and contains, mainly,
@@ -38,9 +38,9 @@ use crate::util::dyn_arr::{DYN_ARR_CAPACITY, DynArr};
 /// 
 /// |---------------- HEADER PAGES -----------------|--- ALLOCATED ...
 /// ```
-struct PageRangeHeader {
+pub struct PageRangeHeader {
     /// size of the range, including this header, in pages
-    pages: usize,
+    pub pages: usize,
     /// size of this header in pages
     header_pages: usize,
     /// bitmap for this range
@@ -51,16 +51,11 @@ struct PageRangeHeader {
 
 /// Reference to all the page ranges
 type AllRanges = &'static mut [&'static mut PageRangeHeader];
-static ALL_RANGES: RwLock<Option<AllRanges>> = RwLock::new(None);
-
-// The following constants are settings for the allocator.
+pub static ALL_RANGES: RwLock<Option<AllRanges>> = RwLock::new(None);
 
 /// The gap, in bytes, that will be kept between the start of the page range
 /// and the `ALL_RANGES` slice it contains.
 const PRE_AR_GAP: usize = 2048;
-/// The size of the page. This MUST be set to 4K unless there's some major
-/// tomfoolery going on.
-const PAGE_SIZE: usize = 4096;
 
 impl PageRangeHeader {
     /// Sets a bit in a bitmap
@@ -102,7 +97,7 @@ impl PageRangeHeader {
     }
 
     /// Returns the starting address of the range
-    fn start(&self) -> PhysAddr {
+    pub fn start(&self) -> PhysAddr {
         PhysAddr(self as *const Self as usize)
     }
 
@@ -317,17 +312,24 @@ pub fn init(mem_map: &MemoryMap) {
 
 /// Tries to allocate a number of physical pages, returning their starting
 /// addresses.
-pub fn allocate(count: usize) -> DynArr<PhysAddr> {
+pub fn allocate(mut count: usize) -> DynArr<PhysAddr> {
     let mut result: DynArr<PhysAddr> = Default::default();
 
     for range in (*ALL_RANGES.write()).as_mut().unwrap().iter_mut() {
-        result += range.allocate(count);
+        let range_result = range.allocate(count);
+        count -= range_result.len();
+        result += range_result;
 
-        if result.len() == DYN_ARR_CAPACITY { break; } // can't return any more results
+        if result.len() == DYN_ARR_CAPACITY || count == 0 { break; } // can't return any more results
     }
 
-    // Print the result
-    log::trace!("pmm allocate({}) = {:?}", count, result);
+    // clear all pages
+    for page in result.iter() {
+        page.clear_page().unwrap();
+    }
+
+    // print the result
+    log::trace!("pmm allocate({}) = {:?}", result.len(), result);
 
     result
 }
