@@ -27,3 +27,6 @@ just enough BEAM modules to bootstrap a functional OS.
 
 As was previously said, there is no clear kernel-userspace divide; instead, BOSS
 goes for an Erlang/OTP-like supervision tree model.
+
+## Credits
+A huge thank you to @thecaralice and @polina4096 for helping me understand Rust
