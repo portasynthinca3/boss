@@ -9,6 +9,7 @@ use core::{mem::{size_of, size_of_val}, ops::Range};
 use uefi::table::boot::{MemoryMap, MemoryDescriptor, MemoryType};
 use spin::RwLock;
 use crate::mem_manager::{ByteSize, PhysAddr};
+use crate::util::dyn_arr::{DYN_ARR_CAPACITY, DynArr};
 
 /// This struct appears at the start of every page range and contains, mainly,
 /// the bitmap of the range. This bitmap directly follows this struct in memory,
@@ -57,47 +58,9 @@ static ALL_RANGES: RwLock<Option<AllRanges>> = RwLock::new(None);
 /// The gap, in bytes, that will be kept between the start of the page range
 /// and the `ALL_RANGES` slice it contains.
 const PRE_AR_GAP: usize = 2048;
-/// The maximum number of pages that can be processed by `allocate()` or
-/// `deallocate()`
-const MAX_ALLOC_BATCH: usize = 16;
 /// The size of the page. This MUST be set to 4K unless there's some major
 /// tomfoolery going on.
 const PAGE_SIZE: usize = 4096;
-/// Invalid physical address marker for debugging
-const INVALID_PHYS: PhysAddr = 0xffffdeadcafebabe;
-
-/// Since the PMM cannot access the VMM, this struct serves as a makeshift `Vec`
-/// that allows `allocate` and `deallocate` to process multiple pages at once.
-/// 
-/// The contents of `buffer` starting with element number `count` are undefined.
-#[derive(Clone)]
-pub struct AllocPages {
-    buffer: [PhysAddr; MAX_ALLOC_BATCH],
-    count: usize
-}
-
-impl AllocPages {
-    fn merge(&mut self, other: &AllocPages) {
-        let to_move = core::cmp::min(other.count, MAX_ALLOC_BATCH - self.count);
-        for i in 0..to_move {
-            self.buffer[self.count + i] = other.buffer[i];
-        }
-        self.count += to_move;
-    }
-}
-
-impl core::fmt::Debug for AllocPages {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "AllocPages[")?;
-        for i in 0..self.count {
-            write!(f, "{:#018x}", self.buffer[i])?;
-            if i != self.count - 1 {
-                write!(f, ", ")?;
-            }
-        }
-        write!(f, "]")
-    }
-}
 
 impl PageRangeHeader {
     /// Sets a bit in a bitmap
@@ -140,7 +103,7 @@ impl PageRangeHeader {
 
     /// Returns the starting address of the range
     fn start(&self) -> PhysAddr {
-        self as *const Self as PhysAddr
+        PhysAddr(self as *const Self as usize)
     }
 
     /// Returns the range of allocatable page indices
@@ -233,8 +196,8 @@ impl PageRangeHeader {
     }
 
     /// Tries to allocate several pages, returning their starting addresses.
-    fn allocate(&mut self, mut count: usize) -> AllocPages {
-        let mut result = AllocPages { buffer: [INVALID_PHYS; MAX_ALLOC_BATCH], count: 0 };
+    fn allocate(&mut self, mut count: usize) -> DynArr<PhysAddr> {
+        let mut result: DynArr<PhysAddr> = Default::default();
         let start = self.start();
 
         // walk through the bitmap
@@ -253,9 +216,8 @@ impl PageRangeHeader {
                 count -= 1;
 
                 // add the page to the result
-                result.buffer[result.count] = start + (page_idx * PAGE_SIZE);
-                result.count += 1;
-                if result.count == MAX_ALLOC_BATCH { break 'outer; } // can't return any more results
+                let page_addr = start + PhysAddr(page_idx * PAGE_SIZE);
+                if result.push(page_addr) == Err(()) { break 'outer; } // can't return any more results
             }
         }
 
@@ -264,18 +226,16 @@ impl PageRangeHeader {
 
     /// Tries to deallocate several pages. Returns addresses that do not belong
     /// to this range.
-    fn deallocate(&mut self, pages: AllocPages) -> AllocPages {
-        let mut result = AllocPages { buffer: [INVALID_PHYS; MAX_ALLOC_BATCH], count: 0 };
+    fn deallocate(&mut self, pages: DynArr<PhysAddr>) -> DynArr<PhysAddr> {
+        let mut result: DynArr<PhysAddr> = Default::default();
 
-        for idx in 0..pages.count {
+        for page in pages.iter() {
             // find what page the address is referring to
-            let page = pages.buffer[idx];
-            let page_idx = (page as isize - self.start() as isize) / PAGE_SIZE as isize;
+            let page_idx = (page.0 as isize - self.start().0 as isize) / PAGE_SIZE as isize;
 
             // if it's not in our allocatable range, return and skip it
             if !self.allocatable_idxs().contains(&page_idx) {
-                result.buffer[result.count] = page;
-                result.count += 1;
+                result.push(page).unwrap();
                 continue;
             }
 
@@ -302,9 +262,9 @@ pub fn init(mem_map: &MemoryMap) {
             MemoryType::CONVENTIONAL |
             MemoryType::BOOT_SERVICES_CODE |
             MemoryType::BOOT_SERVICES_DATA =>
-                avail_already += size as usize,
+                avail_already += ByteSize(size),
             MemoryType::ACPI_RECLAIM => {
-                add_after_reclaim += size as usize;
+                add_after_reclaim += ByteSize(size);
                 continue;
             },
             _ => continue,
@@ -325,10 +285,9 @@ pub fn init(mem_map: &MemoryMap) {
                 
                 // try to extend the range. if that isn't possible,
                 // create a new range
-                if last.start() + (last.pages * PAGE_SIZE) == entry.phys_start as PhysAddr {
-                    if last.extend(entry.page_count as usize) == Ok(()) {
-                        continue;
-                    }
+                if last.start() + PhysAddr(last.pages * PAGE_SIZE) == PhysAddr(entry.phys_start as usize)
+                   && last.extend(entry.page_count as usize) == Ok(()) {
+                    continue;
                 }
 
                 drop(guard);
@@ -347,9 +306,9 @@ pub fn init(mem_map: &MemoryMap) {
 
     // count memory used by the PMM
     for range in ranges.iter() {
-        log::info!("usable range: {:#018x} to {:#018x} ({} hdr pages, {} usable pages)",
-            range.start(), range.start() + (range.pages * PAGE_SIZE), range.header_pages, range.pages - range.header_pages);
-        used_by_pmm += range.header_pages * PAGE_SIZE;
+        log::info!("usable range: {:?} to {:?} ({} hdr pages, {} usable pages)",
+            range.start(), range.start() + PhysAddr(range.pages * PAGE_SIZE), range.header_pages, range.pages - range.header_pages);
+        used_by_pmm += ByteSize(range.header_pages * PAGE_SIZE);
     }
 
     log::info!("memory: {} available, -{} used by PMM, +{} after ACPI reclaim",
@@ -358,14 +317,13 @@ pub fn init(mem_map: &MemoryMap) {
 
 /// Tries to allocate a number of physical pages, returning their starting
 /// addresses.
-pub fn allocate(count: usize) -> AllocPages {
-    let mut result = AllocPages { buffer: [INVALID_PHYS; MAX_ALLOC_BATCH], count: 0 };
+pub fn allocate(count: usize) -> DynArr<PhysAddr> {
+    let mut result: DynArr<PhysAddr> = Default::default();
 
     for range in (*ALL_RANGES.write()).as_mut().unwrap().iter_mut() {
-        let range_result = range.allocate(count);
-        result.merge(&range_result);
+        result += range.allocate(count);
 
-        if result.count == MAX_ALLOC_BATCH { break; } // can't return any more results
+        if result.len() == DYN_ARR_CAPACITY { break; } // can't return any more results
     }
 
     // Print the result
@@ -376,17 +334,17 @@ pub fn allocate(count: usize) -> AllocPages {
 
 /// Deallocates a number of physical pages using their physical addresses.
 /// Returns unrecognized addresses that failed to deallocate.
-pub fn deallocate(mut pages: AllocPages) -> Result<(), AllocPages> {
+pub fn deallocate(mut pages: DynArr<PhysAddr>) -> Result<(), DynArr<PhysAddr>> {
     let orig = pages.clone(); // for tracing
 
     for range in (*ALL_RANGES.write()).as_mut().unwrap().iter_mut() {
         pages = range.deallocate(pages);
-        if pages.count == 0 { break; } // all pages deallocated
+        if pages.len() == 0 { break; } // all pages deallocated
     }
 
     log::trace!("pmm deallocate({orig:?}) = {pages:?}");
 
-    if pages.count == 0 {
+    if pages.len() == 0 {
         Ok(())
     } else {
         Err(pages)

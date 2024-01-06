@@ -1,3 +1,5 @@
+//! The Emulator.
+
 #![no_main]
 #![no_std]
 #![feature(panic_info_message)]
@@ -5,8 +7,7 @@
 mod mem_manager;
 mod hal;
 mod bosbaima;
-
-// extern crate alloc;
+mod util;
 
 use core::panic::PanicInfo;
 use lazy_static::lazy_static;

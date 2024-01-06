@@ -8,3 +8,6 @@ lazy_static = { version = "1.4.0", features = ["spin_no_std"] }
 spin = "0.9.8"
 log = "0.4.20"
 uefi = "0.26.0"
+bitfield-struct = "0.5.6"
+anyhow = { version = "1.0.79", default-features = false }
+derive_more = "0.99.17"
