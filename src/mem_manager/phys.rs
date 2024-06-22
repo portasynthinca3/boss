@@ -1,15 +1,12 @@
 //! Physical Memory Manager. Allocates and frees physical pages using a memory
 //! map supplied to it by the main module.
 
-// FIXME: there's a mishmash of physical addresses, virtual addresses and
-// pointers and references based on the latter. This would have to be fixed once
-// higher-half migration is implemented.
-
 use core::{mem::{size_of, size_of_val}, ops::Range};
 use uefi::table::boot::{MemoryMap, MemoryDescriptor, MemoryType};
 use spin::RwLock;
-use crate::mem_manager::{ByteSize, PhysAddr, PAGE_SIZE};
-use crate::util::dyn_arr::{DYN_ARR_CAPACITY, DynArr};
+use super::{PhysAddr, PAGE_SIZE};
+use crate::{reloc::Relocatable, util::{byte_size::ByteSize, dyn_arr::{DYN_ARR_CAPACITY, DynArr}}, VirtAddr};
+use crate::{checkpoint, checkpoint::Checkpoint};
 
 /// This struct appears at the start of every page range and contains, mainly,
 /// the bitmap of the range. This bitmap directly follows this struct in memory,
@@ -98,12 +95,12 @@ impl PageRangeHeader {
 
     /// Returns the starting address of the range
     pub fn start(&self) -> PhysAddr {
-        PhysAddr(self as *const Self as usize)
+        VirtAddr(self as *const Self as usize).into()
     }
 
     /// Returns the range of allocatable page indices
     fn allocatable_idxs(&self) -> Range<isize> {
-        return self.header_pages as isize .. self.pages as isize - 1;
+        self.header_pages as isize .. self.pages as isize - 1
     }
 
     /// Extends a page range by a number of pages. This operation is refused in
@@ -127,7 +124,7 @@ impl PageRangeHeader {
         self.bitmap = new_bitmap;
         self.header_pages = new_header_pages;
         self.pages += xtd_by;
-        return Ok(());
+        Ok(())
     }
 
     /// Creates the `ALL_RANGES` slice. This operation is refused in case the
@@ -150,7 +147,7 @@ impl PageRangeHeader {
         self.has_all_ranges = true;
         let mut guard = guard.upgrade();
         *guard = Some(all_ranges);
-        return Ok(());
+        Ok(())
     }
 
     /// Makes the page range available by adding it to the global `ALL_RANGES`
@@ -178,7 +175,7 @@ impl PageRangeHeader {
 
         let new_header_pages = (
             (size_of::<PageRangeHeader>()
-            + self.bitmap.len() as usize).div_ceil(PRE_AR_GAP) * PRE_AR_GAP
+            + self.bitmap.len()).div_ceil(PRE_AR_GAP) * PRE_AR_GAP
             + size_of_ar
         ).div_ceil(PAGE_SIZE);
 
@@ -187,7 +184,7 @@ impl PageRangeHeader {
         }
 
         self.header_pages = new_header_pages;
-        return Ok(());
+        Ok(())
     }
 
     /// Tries to allocate several pages, returning their starting addresses.
@@ -242,6 +239,12 @@ impl PageRangeHeader {
     }
 }
 
+impl Relocatable for PageRangeHeader {
+    fn relocate(&mut self) {
+        self.bitmap.relocate();
+    }
+}
+
 /// Initializes the PMM
 pub fn init(mem_map: &MemoryMap) {
     let (mut avail_already, mut add_after_reclaim, mut used_by_pmm): (ByteSize, ByteSize, ByteSize) = Default::default();
@@ -249,7 +252,7 @@ pub fn init(mem_map: &MemoryMap) {
     for entry in mem_map.entries() {
         // print entry
         let size = entry.page_count as usize * PAGE_SIZE;
-        log::trace!("memory map: {:#018x} to {:#018x} {:?}",
+        log::debug!("uefi: {:#018x} to {:#018x} {:?}",
             entry.phys_start, entry.phys_start as usize + size, entry.ty);
         
         // check whether the range is usable
@@ -294,20 +297,21 @@ pub fn init(mem_map: &MemoryMap) {
 
     // finalize by extending the first range's header
     let mut guard = ALL_RANGES.write();
-    let ar_size = size_of_val((*guard).as_ref().unwrap());
+    let ar_size = size_of_val(*(*guard).as_ref().unwrap());
     let ranges = (*guard).as_mut().unwrap();
     let first_range = ranges.first_mut().unwrap();
     first_range.extend_header(ar_size).unwrap();
 
     // count memory used by the PMM
     for range in ranges.iter() {
-        log::info!("usable range: {:?} to {:?} ({} hdr pages, {} usable pages)",
+        log::debug!("usable: {:?} to {:?} ({} hdr pages, {} allocatable pages)",
             range.start(), range.start() + PhysAddr(range.pages * PAGE_SIZE), range.header_pages, range.pages - range.header_pages);
         used_by_pmm += ByteSize(range.header_pages * PAGE_SIZE);
     }
 
     log::info!("memory: {} available, -{} used by PMM, +{} after ACPI reclaim",
         avail_already, used_by_pmm, add_after_reclaim);
+    checkpoint::advance(Checkpoint::PhysMemMgr).unwrap();
 }
 
 /// Tries to allocate a number of physical pages, returning their starting
@@ -325,11 +329,11 @@ pub fn allocate(mut count: usize) -> DynArr<PhysAddr> {
 
     // clear all pages
     for page in result.iter() {
-        page.clear_page().unwrap();
+        unsafe { page.clear_page().unwrap(); }
     }
 
     // print the result
-    log::trace!("pmm allocate({}) = {:?}", result.len(), result);
+    log::trace!("allocate({}) = {:?}", result.len(), result);
 
     result
 }
@@ -344,11 +348,22 @@ pub fn deallocate(mut pages: DynArr<PhysAddr>) -> Result<(), DynArr<PhysAddr>> {
         if pages.len() == 0 { break; } // all pages deallocated
     }
 
-    log::trace!("pmm deallocate({orig:?}) = {pages:?}");
+    log::trace!("deallocate({orig:?}) = {pages:?}");
 
     if pages.len() == 0 {
         Ok(())
     } else {
         Err(pages)
     }
+}
+
+pub fn relocate() {
+    let mut guard = ALL_RANGES.write();
+
+    for range in (*guard).as_mut().unwrap().iter_mut() {
+        (*range).relocate();
+        range.relocate();
+    }
+
+    (*guard).relocate();
 }

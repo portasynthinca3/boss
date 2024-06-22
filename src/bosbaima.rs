@@ -8,16 +8,12 @@
 
 use uefi::{
     prelude::*,
-    Handle,
-    table::{
-        SystemTable,
-        Boot,
-        boot::{
-            OpenProtocolParams,
-            OpenProtocolAttributes,
-            MemoryType
-        }
-    }, proto::{
+    table::boot::{
+        OpenProtocolParams,
+        OpenProtocolAttributes,
+        MemoryType
+    },
+    proto::{
         loaded_image::LoadedImage,
         media::{
             fs::SimpleFileSystem,
@@ -25,12 +21,18 @@ use uefi::{
         }
     },
 };
+use crate::util::byte_size::ByteSize;
+use crate::{checkpoint, checkpoint::Checkpoint};
+use spin::RwLock;
+
+/// Holds the binary image
+static BINARY: RwLock<Option<&[u8]>> = RwLock::new(None);
 
 /// Loads the BBI into memory and returns a static slice.
 /// 
 /// It does so by allocating a memory chunk using the UEFI Boot Services and
 /// calling the UEFI Simple Filesystem Protocol.
-pub fn load(executable_handle: Handle, system_table: &SystemTable<Boot>) -> uefi::Result<&'static [u8]> {
+pub fn load(executable_handle: Handle, system_table: &SystemTable<Boot>) -> uefi::Result<()> {
     // get loaded image protocol handle
     let image_protocol_handle = unsafe {
         system_table.boot_services().open_protocol::<LoadedImage>(OpenProtocolParams {
@@ -67,14 +69,16 @@ pub fn load(executable_handle: Handle, system_table: &SystemTable<Boot>) -> uefi
     let bbi_info = bosbaima.get_info::<FileInfo>(&mut buffer)
         .map_err(|err| err.status())?;
     let bbi_size = bbi_info.file_size() as usize;
-    log::info!("base image size: {} bytes", bbi_size);
+    log::info!("base image size: {}", ByteSize(bbi_size));
 
     // allocate memory for file
     let file_ptr = system_table.boot_services().allocate_pool(MemoryType::LOADER_DATA, bbi_size)?;
-    let mut file_buf = unsafe { core::slice::from_raw_parts_mut(file_ptr, bbi_size) };
+    let file_buf = unsafe { core::slice::from_raw_parts_mut(file_ptr, bbi_size) };
 
     // read file
-    bosbaima.read(&mut file_buf)?;
+    bosbaima.read(file_buf)?;
 
-    Ok(file_buf)
+    *BINARY.write() = Some(file_buf);
+    checkpoint::advance(Checkpoint::BaseImageLoaded).unwrap();
+    Ok(())
 }

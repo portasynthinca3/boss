@@ -8,7 +8,8 @@ clean:
 
 # Emulator (the EFI executable)
 emu:
-	cargo build --target x86_64-unknown-uefi --config build.incremental=false
+	cargo build --target x86_64-unknown-uefi
+	cargo clippy --target x86_64-unknown-uefi
 
 # Erlang
 ERL_SOURCES=base/main.erl
@@ -33,6 +34,8 @@ qemu: esp
 		-drive if=pflash,format=raw,readonly=on,file=/usr/share/ovmf/x64/OVMF.fd \
 		-drive format=raw,file=fat:rw:build/esp \
 		-m 128 \
-		-smp 4,sockets=1,cores=4,threads=1 \
-		-boot menu=on,splash-time=0 \
-		-serial mon:stdio
+		-smp 1,sockets=1,cores=1,threads=1 \
+		-boot menu=off,splash-time=0 \
+		-no-reboot \
+		-d int \
+		-serial stdio

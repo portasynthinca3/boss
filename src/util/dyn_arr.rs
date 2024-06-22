@@ -39,7 +39,7 @@ impl<Elem: DynArrElem> DynArr<Elem> {
     }
 
     /// Creates an array iterator
-    pub fn iter<'arr>(&'arr self) -> DynArrIter<'arr, Elem> {
+    pub fn iter(&self) -> DynArrIter<Elem> {
         DynArrIter {
             position: 0,
             array: self

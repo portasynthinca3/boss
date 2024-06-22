@@ -1,0 +1,6 @@
+[build]
+incremental = false
+rustflags = [
+    "-Cembed-bitcode=no",
+    "-Crelocation-model=pic",
+]
