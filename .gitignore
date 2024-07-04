@@ -1,3 +1,5 @@
 /target
 /build
 /.vscode
+/.gdbinit
+/.gdb_history

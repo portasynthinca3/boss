@@ -1,6 +1,14 @@
 [build]
+rustflags = [
+    # "-Clink-args=/debug:dwarf",
+]
+
+[profile.dev.build-override]
 incremental = false
 rustflags = [
     "-Cembed-bitcode=no",
-    "-Crelocation-model=pic",
+    "-Crelocation-model=pie",
+    "-Cdebuginfo=2",
+    "-Zmacro-backtrace",
+    # "-Clink-args=/debug:dwarf",
 ]

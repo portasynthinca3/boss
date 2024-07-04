@@ -2,13 +2,22 @@
 
 #![no_main]
 #![no_std]
-#![feature(panic_info_message, abi_x86_interrupt)]
+#![feature(
+    panic_info_message,
+    naked_functions,
+    allocator_api,
+    inline_const,
+    let_chains,
+)]
 #![allow(dead_code)]
+
+// extern crate alloc;
 
 use core::{arch::asm, panic::PanicInfo};
 use uefi::{
     prelude::*,
     table::boot::MemoryType,
+    proto::loaded_image::LoadedImage,
 };
 use hal::serial::SerialLogger;
 use mem_manager::*;
@@ -19,6 +28,8 @@ mod mem_manager;
 mod hal;
 mod bosbaima;
 mod util;
+mod interrupt;
+mod segment;
 
 #[cfg(not(test))]
 #[panic_handler]
@@ -43,7 +54,14 @@ fn main(image_handle: Handle, system_table: SystemTable<Boot>) -> Status {
         LOGGER = Some(SerialLogger::new(0));
         log::set_logger(LOGGER.as_ref().unwrap()).unwrap();
     }
-    log::set_max_level(log::LevelFilter::Debug);
+    log::set_max_level(log::LevelFilter::Info);
+
+    // print our address
+    let loaded_image = system_table.boot_services()
+        .open_protocol_exclusive::<LoadedImage>(image_handle)
+        .expect("Failed to open LoadedImage protocol")
+        .info();
+    log::info!("emulator image base={:#x} size={:#x}", loaded_image.0 as usize, loaded_image.1);
 
     // load base image
     // (contains base BEAM modules and VM options)
@@ -59,11 +77,14 @@ fn main(image_handle: Handle, system_table: SystemTable<Boot>) -> Status {
     let mut addr_space = reloc::make_dual_map(&mem_map);
 
     // relocate everything to the upper half
+    reloc::relocate_pe(loaded_image);
     phys::relocate();
 
     // create new stack
-    // 10 pages = 40 KiB
-    let stack_top = addr_space.allocate_stack(reloc::EMULATOR_STK_BASE, 10, Default::default()).unwrap();
+    let stack_top = {
+        let mut mut_space = addr_space.modify();
+        mut_space.allocate_range(EMULATOR_STK_BASE, EMULATOR_STK_PAGES, Default::default(), true).unwrap()
+    };
 
     // continue execution with the instruction pointer in the upper half
     unsafe { reloc::execute_jump(stack_top, after_reloc, &()); }
@@ -72,11 +93,23 @@ fn main(image_handle: Handle, system_table: SystemTable<Boot>) -> Status {
 extern "C" fn after_reloc(_data: &()) -> ! {
     // jumped successfully
     checkpoint::advance(Checkpoint::RelocUpperExec).unwrap();
+    let mut addr_space = unsafe { virt::AddressSpace::get_current() };
+
+    // initialize interrupts
+    let (interrupt_mgr, _segments) = interrupt::Manager::new(&mut addr_space);
+    unsafe { interrupt_mgr.set_as_current(); }
 
     // unmap lower half
-    let mut addr_space = unsafe { virt::AddressSpace::get_current() };
-    addr_space.root().deallocate(true).unwrap();
+    {
+        let mut guard = addr_space.modify();
+        guard.unmap_range(VirtAddr::from_usize(0)..=VirtAddr::from_usize(0x0000_7fff_ffff_ffff)).unwrap();
+    }
     checkpoint::advance(Checkpoint::RelocDone).unwrap();
+
+    // initialize global allocator
+    // unsafe { malloc::initialize_default(addr_space) };
+
+    // TODO: test allocator
 
     loop {
         unsafe { asm!("hlt"); }

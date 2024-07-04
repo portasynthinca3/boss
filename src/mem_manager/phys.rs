@@ -95,7 +95,8 @@ impl PageRangeHeader {
 
     /// Returns the starting address of the range
     pub fn start(&self) -> PhysAddr {
-        VirtAddr(self as *const Self as usize).into()
+        let virt: VirtAddr = self.into();
+        virt.into()
     }
 
     /// Returns the range of allocatable page indices
@@ -239,12 +240,6 @@ impl PageRangeHeader {
     }
 }
 
-impl Relocatable for PageRangeHeader {
-    fn relocate(&mut self) {
-        self.bitmap.relocate();
-    }
-}
-
 /// Initializes the PMM
 pub fn init(mem_map: &MemoryMap) {
     let (mut avail_already, mut add_after_reclaim, mut used_by_pmm): (ByteSize, ByteSize, ByteSize) = Default::default();
@@ -362,7 +357,7 @@ pub fn relocate() {
 
     for range in (*guard).as_mut().unwrap().iter_mut() {
         (*range).relocate();
-        range.relocate();
+        range.bitmap.relocate();
     }
 
     (*guard).relocate();
