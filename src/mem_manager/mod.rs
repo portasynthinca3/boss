@@ -1,10 +1,11 @@
-use core::fmt::{Debug, Formatter, self};
+use core::{fmt::{self, Debug, Formatter}, ops::Sub};
 use derive_more::{Add, Sub, AddAssign, SubAssign, Into};
+use crate::checkpoint::{self, Checkpoint};
 
 pub mod phys;
 pub mod virt;
 pub mod reloc;
-// pub mod malloc;
+pub mod malloc;
 
 // The following constants outline the memory map:
 //   - `0` - `0xffff_8000_0000_0000`: NIF memory, identity mapped physical
@@ -79,9 +80,17 @@ impl VirtAddr {
     /// Forms a virtual address.
     /// 
     /// # Safety
-    /// The supplied integer must be correctly sign extended
+    /// The supplied integer must be correctly sign extended, otherwise the CPU
+    /// will throw an exception if it is used.
     pub unsafe fn from_usize_unchecked(int: usize) -> VirtAddr {
         VirtAddr(int)
+    }
+}
+
+impl Sub for VirtAddr {
+    type Output = usize;
+    fn sub(self, rhs: Self) -> Self::Output {
+        self.0 - rhs.0
     }
 }
 

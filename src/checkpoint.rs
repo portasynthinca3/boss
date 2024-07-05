@@ -18,8 +18,12 @@ pub enum Checkpoint {
     RelocDualMapping,
     /// Relocation phase 2 (execution in upper half)
     RelocUpperExec,
+    /// Interrupts available
+    Interrupts,
     /// Relocation done (lower half dropped)
     RelocDone,
+    /// Heap allocation available
+    Heap,
     /// All CPUs online
     SmpOnline,
     /// BEAM structures initialized

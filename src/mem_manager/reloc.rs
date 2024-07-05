@@ -224,7 +224,6 @@ pub fn relocate_pe(image_info: (*const core::ffi::c_void, u64)) {
         // SAFETY: read first safety declaration
         reloc_data = unsafe { reloc_data.byte_offset(-(PAGE_SIZE as isize)) };
     }
-    log::trace!("reloc_start={reloc_data:?}");
 
     let relocation_offset = EMULATOR_BASE.0;
     assert!(relocation_offset & 0xFFFF_FFFF == 0);
@@ -236,7 +235,6 @@ pub fn relocate_pe(image_info: (*const core::ffi::c_void, u64)) {
         // pointer is aligned by at least two bytes; data is of that type thanks
         // to the PE spec and build system.
         let blk_header = unsafe { mem::transmute::<_, *const PeRelocBlkHdr>(reloc_data).read_unaligned() };
-        log::trace!("{blk_header:?}");
         // SAFETY: read previous safety declaration
         reloc_data = unsafe { reloc_data.byte_add(size_of::<PeRelocBlkHdr>()) };
         let entry_cnt = (blk_header.size() as usize - size_of::<PeRelocBlkHdr>()) / size_of::<PeRelocEntry>();
@@ -246,7 +244,6 @@ pub fn relocate_pe(image_info: (*const core::ffi::c_void, u64)) {
         if blk_header.size() == 0
         || entry_cnt > PAGE_SIZE / 4
         || blk_header.page() > img_len as u32 {
-            log::trace!("invalid block header, reached end");
             break;
         }
 
@@ -260,7 +257,6 @@ pub fn relocate_pe(image_info: (*const core::ffi::c_void, u64)) {
             let entry_type = PeRelocType::from_repr(entry.e_type().into());
             // SAFETY: read previous safety declaration
             let field_ptr = unsafe { image.byte_add(blk_header.page() as usize + entry.page_offset() as usize) };
-            log::trace!("{reloc_data:?} => {entry_type:?} at {:?}", field_ptr);
 
             match entry_type {
                 None => panic!("invalid relocation type {}", entry.e_type()),

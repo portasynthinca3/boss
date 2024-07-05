@@ -15,3 +15,6 @@ bitfield-struct = "0.5.6"
 anyhow = { version = "1.0.79", default-features = false }
 derive_more = "0.99.17"
 paste = "1.0.15"
+
+[features]
+trace-pmm = []

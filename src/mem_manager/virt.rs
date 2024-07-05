@@ -303,7 +303,7 @@ impl<'s> RawTable<'s> {
         // allocate page for table
         let pages = phys::allocate(1);
         if pages.len() < 1 { return Err(MemMgrError::OutOfMemory); }
-        let page = pages[0];
+        let page: VirtAddr = pages[0].into();
 
         // ensure that we've been given a viable starting address
         // it's valid only if all indices starting with the one that we're
@@ -314,13 +314,13 @@ impl<'s> RawTable<'s> {
             valid &= current_kind.entry_idx(lowest_addr).unwrap() == 0;
             current_kind = next_kind;
         }
-        // the page offset has to be zero to
+        // the page offset has to be zero too
         valid &= lowest_addr.0 & PAGE_OFFSET_MASK == 0;
         if !valid { return Err(MemMgrError::InvalidLowestAddr); }
 
         Ok(Self {
             lowest_addr,
-            entries: page.0 as *mut [TableEntry; ENTRY_CNT],
+            entries: page.into(),
             kind,
             attrs,
             subspace: None,
@@ -361,13 +361,13 @@ impl<'s> RawTable<'s> {
         let ds_kind = self.kind.downstream()?; // this also ensures that we can have children
 
         // acquire subspace lock if present
-        let subspace = /*if entry.subspace_id() > 0 {
+        let subspace = if entry.subspace_id() > 0 {
             let id = entry.subspace_id() - 1;
             let mutex = &SUBSPACE_REGISTRY[id as usize];
             Some((mutex.lock(), id))
         } else {
             None
-        };*/ None;
+        };
 
         // return table
         let virt_addr: VirtAddr = PhysAddr(entry.addr() << 12).into();
@@ -623,9 +623,10 @@ impl AddressSpace {
     /// Returns the root PML4 table of the address space.
     fn root<'b>(&self) -> RawTable<'b> {
         let attrs = TableAttrs { cache: self.cr3.cache_mode(), ..Default::default() };
+        let pml4_addr: VirtAddr = PhysAddr(self.cr3.addr() << BITS_FOR_PAGE_OFFSET).into();
         RawTable {
             attrs,
-            entries: (self.cr3.addr() << BITS_FOR_PAGE_OFFSET) as *mut [TableEntry; ENTRY_CNT],
+            entries: pml4_addr.into(),
             lowest_addr: VirtAddr::from_usize(0),
             kind: TableKind::Pml4,
             subspace: None,
@@ -729,7 +730,6 @@ impl<'guard, 'r> AddressSpaceGuard<'guard, 'r> {
             deletion_callback: &mut impl FnMut(&mut RawTable<'_>) -> bool
         ) -> Result<TableAttrs, MemMgrError> {
             let mut most_permissive_attrs: TableAttrs = Default::default();
-            let mut what_da_dog_doin = 0;
 
             if table.kind.downstream().is_some() { // ensure that we can have children
                 for i in table.downstream_idx_range(addresses.clone()).unwrap() {
@@ -752,22 +752,6 @@ impl<'guard, 'r> AddressSpaceGuard<'guard, 'r> {
 
                         if delete {
                             unsafe { ds.addr().clear_page().unwrap() }; // mark all entries as not present
-                            // mark all entries as not present
-                            log::trace!("{original_virt_addr:?} through {:?}", VirtAddr(original_virt_addr.unwrap().0 + (PAGE_SIZE * 292)));
-                            // for i in 0..293 {
-                                // unsafe { ds.set_downstream_by_idx(i, None).unwrap(); }
-                            // }
-                            // loop { }
-                            if what_da_dog_doin == 1 {
-                                // log::trace!("{i} {original_address:?} {ds:?}");
-                                let mut aboba = 1;
-                                loop {
-                                    // log::trace!("test");
-                                    log::trace!("test {aboba}");
-                                    // unsafe { crate::LOGGER.as_ref().unwrap().port.lock().write_str("hi\n") };
-                                    aboba += 1;
-                                }
-                            }
                             downstream = None;
                             changes_applied = true;
                         }
@@ -792,9 +776,6 @@ impl<'guard, 'r> AddressSpaceGuard<'guard, 'r> {
                         let mut pages = DynArr::<PhysAddr>::new();
                         pages.push(original_address.unwrap()).unwrap();
                         phys::deallocate(pages).or(Err(MemMgrError::UnrecognizedDealloc))?;
-                        if original_address.unwrap().0 == 0x4d000 {
-                            // what_da_dog_doin += 1;
-                        }
                     }
                 }
             }
@@ -837,9 +818,8 @@ impl<'guard, 'r> AddressSpaceGuard<'guard, 'r> {
         let mut error: Option<MemMgrError> = None;
 
         self.iterate_over_range_mut(start_virt..=end_virt, |child, kind, low_addr| {
-
             if kind == TableKind::Page {
-                assert!(low_addr ==  VirtAddr::from_usize(start_virt.0 + (page_ctr * PAGE_SIZE))); // sanity check
+                assert_eq!(low_addr, VirtAddr::from_usize(start_virt.0 + (page_ctr * PAGE_SIZE))); // sanity check
                 // if considering an end page, force-assign a new physical address
                 *child = Some(RawTable {
                     kind: TableKind::Page,

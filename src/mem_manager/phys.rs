@@ -72,6 +72,7 @@ impl PageRangeHeader {
         let bm_size = desc.page_count.div_ceil(8);
         let bm_ptr = (desc.phys_start as usize + size_of::<PageRangeHeader>()) as *mut u8;
         let bitmap = unsafe { core::slice::from_raw_parts_mut(bm_ptr, bm_size as usize) };
+        bitmap.fill(0);
 
         // mark header pages as used
         let header_pages = (size_of::<PageRangeHeader>() + bm_size as usize).div_ceil(PAGE_SIZE);
@@ -101,7 +102,7 @@ impl PageRangeHeader {
 
     /// Returns the range of allocatable page indices
     fn allocatable_idxs(&self) -> Range<isize> {
-        self.header_pages as isize .. self.pages as isize - 1
+        self.header_pages as isize .. self.pages as isize
     }
 
     /// Extends a page range by a number of pages. This operation is refused in
@@ -204,13 +205,13 @@ impl PageRangeHeader {
                 let page_idx = byte_idx * 8 + free_bit;
                 if page_idx >= self.pages { break 'outer; } // can't 
 
-                // mark the bit as used
-                *content |= 1 << free_bit;
-                count -= 1;
-
                 // add the page to the result
                 let page_addr = start + PhysAddr(page_idx * PAGE_SIZE);
                 if result.push(page_addr) == Err(()) { break 'outer; } // can't return any more results
+
+                // mark the bit as used
+                *content |= 1 << free_bit;
+                count -= 1;
             }
         }
 
@@ -309,9 +310,24 @@ pub fn init(mem_map: &MemoryMap) {
     checkpoint::advance(Checkpoint::PhysMemMgr).unwrap();
 }
 
+fn dump() {
+    log::trace!("PMM dump:");
+    for range in (*ALL_RANGES.write()).as_mut().unwrap().iter_mut() {
+        let start = range.start();
+        let size = range.pages;
+        let mut used = 0;
+        for byte in range.bitmap.iter() {
+            used += byte.count_ones();
+        }
+        log::trace!("range_start={start:?} used={used}/{size}");
+    }
+}
+
 /// Tries to allocate a number of physical pages, returning their starting
 /// addresses.
 pub fn allocate(mut count: usize) -> DynArr<PhysAddr> {
+    #[cfg(feature = "trace-pmm")]
+    let given_count = count;
     let mut result: DynArr<PhysAddr> = Default::default();
 
     for range in (*ALL_RANGES.write()).as_mut().unwrap().iter_mut() {
@@ -327,8 +343,8 @@ pub fn allocate(mut count: usize) -> DynArr<PhysAddr> {
         unsafe { page.clear_page().unwrap(); }
     }
 
-    // print the result
-    log::trace!("allocate({}) = {:?}", result.len(), result);
+    #[cfg(feature = "trace-pmm")]
+    log::trace!("allocate({given_count}) = {result:?}");
 
     result
 }
@@ -336,13 +352,15 @@ pub fn allocate(mut count: usize) -> DynArr<PhysAddr> {
 /// Deallocates a number of physical pages using their physical addresses.
 /// Returns unrecognized addresses that failed to deallocate.
 pub fn deallocate(mut pages: DynArr<PhysAddr>) -> Result<(), DynArr<PhysAddr>> {
-    let orig = pages.clone(); // for tracing
+    #[cfg(feature = "trace-pmm")]
+    let orig = pages.clone();
 
     for range in (*ALL_RANGES.write()).as_mut().unwrap().iter_mut() {
         pages = range.deallocate(pages);
         if pages.len() == 0 { break; } // all pages deallocated
     }
 
+    #[cfg(feature = "trace-pmm")]
     log::trace!("deallocate({orig:?}) = {pages:?}");
 
     if pages.len() == 0 {

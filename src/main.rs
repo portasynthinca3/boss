@@ -8,10 +8,14 @@
     allocator_api,
     inline_const,
     let_chains,
+    ptr_as_uninit,
+    slice_ptr_get,
+    non_null_convenience,
+    alloc_layout_extra,
 )]
 #![allow(dead_code)]
 
-// extern crate alloc;
+extern crate alloc;
 
 use core::{arch::asm, panic::PanicInfo};
 use uefi::{
@@ -19,6 +23,8 @@ use uefi::{
     table::boot::MemoryType,
     proto::loaded_image::LoadedImage,
 };
+use alloc::{boxed::Box, string::String, vec};
+
 use hal::serial::SerialLogger;
 use mem_manager::*;
 use checkpoint::Checkpoint;
@@ -54,7 +60,7 @@ fn main(image_handle: Handle, system_table: SystemTable<Boot>) -> Status {
         LOGGER = Some(SerialLogger::new(0));
         log::set_logger(LOGGER.as_ref().unwrap()).unwrap();
     }
-    log::set_max_level(log::LevelFilter::Info);
+    log::set_max_level(log::LevelFilter::Trace);
 
     // print our address
     let loaded_image = system_table.boot_services()
@@ -98,6 +104,7 @@ extern "C" fn after_reloc(_data: &()) -> ! {
     // initialize interrupts
     let (interrupt_mgr, _segments) = interrupt::Manager::new(&mut addr_space);
     unsafe { interrupt_mgr.set_as_current(); }
+    checkpoint::advance(Checkpoint::Interrupts).unwrap();
 
     // unmap lower half
     {
@@ -107,9 +114,8 @@ extern "C" fn after_reloc(_data: &()) -> ! {
     checkpoint::advance(Checkpoint::RelocDone).unwrap();
 
     // initialize global allocator
-    // unsafe { malloc::initialize_default(addr_space) };
-
-    // TODO: test allocator
+    unsafe { malloc::initialize_default(addr_space) };
+    checkpoint::advance(Checkpoint::Heap).unwrap();
 
     loop {
         unsafe { asm!("hlt"); }

@@ -1,8 +1,8 @@
-use core::fmt::{Display, Formatter, self};
+use core::fmt::{Debug, Display, Formatter, self};
 use derive_more::{Add, Sub, AddAssign, SubAssign};
 
 /// Display-friendly byte size type
-#[derive(Default, Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
+#[derive(Default, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 #[derive(Add, Sub, AddAssign, SubAssign)]
 pub struct ByteSize(pub usize);
 
@@ -15,5 +15,11 @@ impl Display for ByteSize {
         } else {
             write!(f, "{} bytes", self.0)
         }
+    }
+}
+
+impl Debug for ByteSize {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{self}")
     }
 }

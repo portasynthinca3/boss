@@ -258,6 +258,13 @@ extern "sysv64" fn _intr_common_handler(state_ptr: *mut ExecutionState) {
         let is_exception = matches!(vector, Vector::Internal(_));
         if !is_handled && is_exception {
             log::error!("unhandled {vector:?}; errcode: {code}");
+            if vector == Vector::Internal(ExceptionType::PageFault) {
+                let cr2: u64;
+                // SAFETY: getting the CR2 (which contains the accessed address
+                // that caused the fault) is safe
+                unsafe { asm!("mov {0}, cr2", out(reg) cr2) };
+                log::error!("CR2={cr2:#018x}");
+            }
             log::error!("RAX={:#018x}  RBX={:#018x}  RCX={:#018x}  RDX={:#018x}", state.rax, state.rbx, state.rcx, state.rdx);
             log::error!("RBP={:#018x}  RSP={:#018x}  RSI={:#018x}  RDI={:#018x}", state.rbp, state.rsp, state.rsi, state.rdi);
             log::error!("R8=={:#018x}  R9=={:#018x}  R10={:#018x}  R11={:#018x}", state.r8, state.r9, state.r10, state.r11);
@@ -282,8 +289,6 @@ extern "sysv64" fn _intr_common_handler(state_ptr: *mut ExecutionState) {
 #[no_mangle]
 unsafe extern "C" fn _intr_reg_wrapper() -> ! {
     asm!(
-        "add rsp, 9*8",
-        "2: jmp 2b",
         // save registers
         // note: rax saved by trampoline
         "push rbx",

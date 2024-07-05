@@ -12,3 +12,6 @@ rustflags = [
     "-Zmacro-backtrace",
     # "-Clink-args=/debug:dwarf",
 ]
+
+[profile.release.build-override]
+opt-level=3

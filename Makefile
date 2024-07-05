@@ -8,16 +8,18 @@ clean:
 	mkdir build
 
 # Emulator (the EFI executable)
+PROFILE=release
+PROFILE_DIR=release
 CARGOFLAGS=--target x86_64-unknown-uefi-debug.json -Zbuild-std=core,compiler_builtins,alloc -Zbuild-std-features=compiler-builtins-mem
 MAGIC_SECTION_OFFSET=0x140800000
 RELOC_SECTION_OFFSET=0x140801000
 emu:
-	cargo build $(CARGOFLAGS)
-	cargo clippy $(CARGOFLAGS)
+	cargo build $(CARGOFLAGS) --profile $(PROFILE)
+	cargo clippy $(CARGOFLAGS) --profile $(PROFILE)
 # magic! (read mem_manager/reloc.rs::relocate_pe for an explanation)
 	dd if=/dev/random of=build/rand bs=1 count=2048
 	cat build/rand build/rand > build/reloc-magic
-	objcopy target/x86_64-unknown-uefi-debug/debug/boss.efi \
+	objcopy target/x86_64-unknown-uefi-debug/$(PROFILE_DIR)/boss.efi \
 		--add-section .reloc-magic=build/reloc-magic \
 		--change-section-address .reloc-magic=$(MAGIC_SECTION_OFFSET) \
 		--change-section-address .reloc=$(RELOC_SECTION_OFFSET) \
