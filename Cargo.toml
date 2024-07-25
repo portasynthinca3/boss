@@ -25,7 +25,11 @@ paste = "1.0.15"
 regex = "1.10"
 
 [features]
+# Traces allocation and deallocation of pages by the physical memory manager
 trace-pmm = []
+# Traces heap allocations and deallocation
 trace-malloc = []
+# Traces instructions executed by the BEAM interpreter
 trace-beam = []
+# Traces messages sent between executables
 trace-messages = []

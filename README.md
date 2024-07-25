@@ -1,7 +1,8 @@
 # BOSS
 BOSS (BEAM-based Operating System with Security) is a proof-of-concept operating
 system written in Erlang together with Rust. Its distinctive features include:
-  - not having a clear kernel-userspace divide;
+  - replacing the traditional kernel-userspace divide with Erlang's supervision
+    tree model;
   - capability-based security from the ground up.
 
 ![BOSS printing Hello, World from Erlang](demo/helloworld.png)
@@ -11,8 +12,11 @@ system written in Erlang together with Rust. Its distinctive features include:
   - implement an Erlang VM;
   - implement the dumbest fucking idea that came to my head at 3 in the morning.
 
-This project is purely for my education and enjoyment. I am not claiming that my
-code is safe, fast, secure nor correct.
+This project strives to achieve the following, in order of decreasing
+importance:
+  - get the implementation to work;
+  - make the implementation correct;
+  - make the implementation fast.
 
 ### Urrr-lang?
 Yes. Erlang is a very cool functional (at a low level) / object-oriented (at a
