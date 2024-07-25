@@ -4,6 +4,8 @@ system written in Erlang together with Rust. Its distinctive features include:
   - not having a clear kernel-userspace divide;
   - capability-based security from the ground up.
 
+![BOSS printing Hello, World from Erlang](demo/helloworld.png)
+
 ## Goals
   - learn Rust;
   - implement an Erlang VM;
@@ -26,11 +28,12 @@ implementation is not. Like, not at all. But it works and it's a starting point!
 The basis of this project is the **emulator**, a multiprocessing-aware Erlang VM
 that runs on bare hardware. It only implements the bare minimum it has to
 implement in order to reach this objective; for example, it does parse some ACPI
-tables (since that is required for multiprocessing to work), but it does not run
-AML bytecode - that task is left up to the BEAM bytecode it runs. The emulator
-only supports the x86_64 ISA, UEFI and ACPI 2.0+, i.e. it will run on machines
-from approximately 2010 onwards. It could be argued that the emulator is a
-microkernel, since it implements the things a uK would (scheduling and IPC), but
+tables (since that is required for multiprocessing to work) (or, at least, it
+will once this feature is actually implemented), but it does not run AML
+bytecode - that task is left up to the BEAM bytecode it runs. The emulator only
+supports the x86_64 ISA, UEFI and ACPI 2.0+, i.e. it will run on machines from
+approximately 2010 onwards. It could be argued that the emulator is a
+microkernel since it implements the things a uK would (scheduling and IPC), but
 it's my project and I prefer not to name it that.
 
 Even though the emulator is _a_ BEAM, it's not _the_ BEAM. It is compatible with
@@ -96,7 +99,8 @@ Emulator:
   - [x] BEAM bytecode parsing
   - [x] BEAM code execution
   - [x] Basic ports
-  - [ ] Code cleanup before public release
+  - [x] Small code cleanup before public release
+  - [ ] Large stylistic cleanup
   - [ ] SMP
   - [ ] Advanced ports
   - [ ] Performance enhancements
@@ -136,8 +140,8 @@ $ cd boss
 $ make qemu
 ```
 
-Currently, the OS does not display anything on the screen. Refer to serial
-output that relayed to the terminal instead.
+Currently, the OS does not display anything on the screen. Instead, refer to
+serial output that's relayed to the terminal.
 
 ### No, I wanna run it on bare hardware
 Please don't. Run `make` and make a FAT32 disk image from `boot/esp` yourself.
