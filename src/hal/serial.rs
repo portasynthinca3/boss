@@ -1,8 +1,9 @@
 use core::fmt::Write;
 
-use crate::hal::io_port::Port;
 use log::{Record, Level, Metadata};
 use spin::Mutex;
+
+use crate::hal::io_port::Port;
 
 /// Base IO ports for the 8 serial ports
 const PORT_BASES: [u16; 8] = [0x3f8, 0x2f8, 0x3e8, 0x2e8, 0x5f8, 0x4f8, 0x5e8, 0x4e8];

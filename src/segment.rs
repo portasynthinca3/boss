@@ -10,9 +10,10 @@
 //! 
 //! I dunno, I love low-level dev, but this kind of stuff annoys and saddens me.
 
-use bitfield_struct::bitfield;
 use core::mem::size_of;
 use core::arch::asm;
+
+use bitfield_struct::bitfield;
 
 use crate::{phys, reloc::Relocatable, VirtAddr, PAGE_SIZE};
 

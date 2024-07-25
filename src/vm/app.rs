@@ -4,6 +4,7 @@
 //! traditional OTP code, and thus a compatibility mode is needed.
 
 use alloc::{rc::Rc, boxed::Box};
+
 use hashbrown::HashMap;
 
 use super::{module::Module, state::{LocalAtomRef, LocalContext}, term::{LocalTerm, TermError}};

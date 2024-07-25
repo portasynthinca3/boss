@@ -5,15 +5,16 @@
 
 use alloc::{format, rc::Rc};
 
-use app::Application;
 use hashbrown::HashMap;
+
+use crate::util::tar::TarFile;
+use app::Application;
 use port::LogPort;
 use interpreter::{BeamInterpreter, BeamInterpreterMakeError};
 use module::{Module, LoadError};
 use scheduler::{PrimitiveScheduler, Schedule};
 use state::LocalContext;
 use term::{LocalTerm, MapTerm, TermError};
-use crate::util::tar::TarFile;
 
 pub const CURRENT_OPCODE_MAX: usize = 178;
 

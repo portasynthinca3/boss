@@ -2,8 +2,9 @@
 //! and references to the upper half of the virtual address space in an
 //! operation called relocation. This module deals with this operation.
 
-use bitfield_struct::bitfield;
 use core::{arch::asm, slice, mem::{self, size_of}};
+
+use bitfield_struct::bitfield;
 use uefi::table::boot::{MemoryMap, MemoryType};
 
 use super::{

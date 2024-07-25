@@ -1,9 +1,10 @@
 //! Extremely primitive linked list allocator that works on top of a physical
 //! page allocator.
 
-use spin::Mutex;
 use core::{mem::{align_of, size_of}, ptr::{self, NonNull}};
 use alloc::alloc::{AllocError, Allocator, GlobalAlloc, Layout};
+
+use spin::Mutex;
 
 use crate::util::byte_size::ByteSize;
 use super::{MemMgrError, virt::AddressSpace, VirtAddr, phys, PAGE_SIZE};

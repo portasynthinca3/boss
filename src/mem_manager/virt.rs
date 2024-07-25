@@ -45,9 +45,6 @@
 //! For more information, refer to the Intel Software Developer's Manual. It's
 //! got some nice diagrams to help you visualize how this process works.
 
-use bitfield_struct::bitfield;
-use spin::{Mutex, MutexGuard, RwLock};
-use strum::VariantArray;
 use core::{
     arch::asm,
     fmt::{self, Debug, Formatter},
@@ -55,6 +52,10 @@ use core::{
     mem::size_of,
     ops::{Range, RangeInclusive}
 };
+
+use bitfield_struct::bitfield;
+use spin::{Mutex, MutexGuard, RwLock};
+use strum::VariantArray;
 
 use crate::util::dyn_arr::DynArr;
 use super::{

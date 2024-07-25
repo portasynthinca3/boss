@@ -6,6 +6,7 @@
 //! the address contained in the MSR, but that is not done here.
 
 use alloc::boxed::Box;
+
 use crate::ll::msr::{IA32Msr, Msr};
 
 /// Processor-local storage

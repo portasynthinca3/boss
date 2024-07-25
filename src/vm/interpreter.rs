@@ -1,12 +1,10 @@
 //! Basic BEAM interpreter
 
 use core::iter;
-
 use alloc::vec;
 use alloc::{boxed::Box, rc::Rc, vec::Vec};
 
 use crate::vm::scheduler::{ExecuteStatus, TransferAgent};
-
 use super::{module::{Instruction, Module, Opcode, Operand}, scheduler::{CommonState, Execute, ExecuteMake}, state::{LocalAtomRef, LocalContext}, term::LocalTerm};
 
 #[derive(Clone, Debug)]

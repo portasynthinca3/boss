@@ -2,8 +2,10 @@
 //! map supplied to it by the main module.
 
 use core::{mem::{size_of, size_of_val}, ops::Range};
+
 use uefi::table::boot::{MemoryMap, MemoryDescriptor, MemoryType};
 use spin::RwLock;
+
 use super::{PhysAddr, PAGE_SIZE};
 use crate::{reloc::Relocatable, util::{byte_size::ByteSize, dyn_arr::{DYN_ARR_CAPACITY, DynArr}}, VirtAddr};
 use crate::{checkpoint, checkpoint::Checkpoint};

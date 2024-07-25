@@ -4,6 +4,7 @@
 //! inherently  unsafe.
 
 use core::arch::asm;
+
 use num_enum::IntoPrimitive;
 
 /// Trait for convenience enums which represent MSRs

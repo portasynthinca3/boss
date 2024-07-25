@@ -35,10 +35,11 @@
 //!     structures.
 //!   - Public: [`Manager`] exposes a somewhat safe and nice-to-use abstraction.
 
-use bitfield_struct::bitfield;
 use core::mem::size_of;
 use core::arch::asm;
+
 use strum::VariantArray;
+use bitfield_struct::bitfield;
 
 use crate::mem_manager::{phys, reloc::Relocatable, PAGE_SIZE, VirtAddr, virt::AddressSpace};
 use crate::segment::*;

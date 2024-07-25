@@ -22,6 +22,7 @@
 extern crate alloc;
 
 use core::{arch::asm, panic::PanicInfo};
+
 use uefi::{
     prelude::*,
     table::boot::MemoryType,
