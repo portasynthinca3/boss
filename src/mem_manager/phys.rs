@@ -355,6 +355,7 @@ pub fn allocate(mut count: usize) -> DynArr<PhysAddr> {
 
 /// Deallocates a number of physical pages using their physical addresses.
 /// Returns unrecognized addresses that failed to deallocate.
+#[allow(clippy::result_large_err)]
 pub fn deallocate(mut pages: DynArr<PhysAddr>) -> Result<(), DynArr<PhysAddr>> {
     #[cfg(feature = "trace-pmm")]
     let orig = pages.clone();

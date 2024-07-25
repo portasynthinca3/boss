@@ -65,7 +65,7 @@ fn main(image_handle: Handle, system_table: SystemTable<Boot>) -> Status {
         LOGGER = Some(SerialLogger::new(0));
         log::set_logger(LOGGER.as_ref().unwrap()).unwrap();
     }
-    log::set_max_level(log::LevelFilter::Trace);
+    log::set_max_level(log::LevelFilter::Info);
 
     // print our address
     let loaded_image = system_table.boot_services()
@@ -121,12 +121,4 @@ extern "C" fn after_reloc(_data: &()) -> ! {
 
     // start the VM
     vm::init(bosbaima::get()).unwrap();
-    // unsafe { vm::executor::Pls::init() };
-    // let date = core::str::from_utf8(bosbaima::get().read_file("date").unwrap()).unwrap().trim();
-    // log::info!("base image built on {date}");
-    // let main_mod = vm::module::Module::new(bosbaima::get().read_file("ebin/main.beam").unwrap()).unwrap();
-
-    loop {
-        unsafe { asm!("hlt"); }
-    }
 }

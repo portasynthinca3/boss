@@ -101,7 +101,7 @@ impl LinkedListAllocator {
     /// # Safety
     /// The function is unsafe in case there are other objects at any address
     /// above `bottom`.
-    pub unsafe fn new<'a>(bottom: VirtAddr, mut address_space: AddressSpace) -> Result<LinkedListAllocator> {
+    pub unsafe fn new(bottom: VirtAddr, mut address_space: AddressSpace) -> Result<LinkedListAllocator> {
         // place first block header
         let pages = phys::allocate(1);
         if pages.len() < 1 { return Err(MemMgrError::OutOfMemory); }
@@ -151,7 +151,7 @@ impl core::fmt::Debug for LinkedListAllocator {
             if current.size > 64 * 8 {
                 write!(f, "...")?;
             }
-            writeln!(f, "")?;
+            writeln!(f)?;
             display_capacity += display_size;
             if current.used { display_used += display_size };
             previous = previous.next.as_ref().unwrap();
@@ -237,7 +237,7 @@ unsafe impl Allocator for LinkedListAllocator {
             };
 
             previous.next = Some(blk_ref);
-            (&mut previous).next.as_mut().unwrap()
+            previous.next.as_mut().unwrap()
         } else {
             // last block is free but small: need to extend it
             let target_size = pre_padding + layout.size() + post_padding;

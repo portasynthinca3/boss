@@ -8,9 +8,9 @@ clean:
 	mkdir build
 
 # Emulator (the EFI executable)
-PROFILE=dev
-PROFILE_DIR=debug
-CARGOFLAGS=--target x86_64-unknown-uefi-debug.json -Zbuild-std=core,compiler_builtins,alloc -Zbuild-std-features=compiler-builtins-mem --features=trace-messages
+PROFILE=release
+PROFILE_DIR=release
+CARGOFLAGS=--target x86_64-unknown-uefi-debug.json -Zbuild-std=core,compiler_builtins,alloc -Zbuild-std-features=compiler-builtins-mem
 MAGIC_SECTION_OFFSET=0x141000000
 RELOC_SECTION_OFFSET=0x141001000
 emu:

@@ -3,7 +3,7 @@
 use core::iter;
 
 use alloc::vec;
-use alloc::{borrow::ToOwned, boxed::Box, rc::Rc, vec::Vec};
+use alloc::{boxed::Box, rc::Rc, vec::Vec};
 
 use crate::vm::scheduler::{ExecuteStatus, TransferAgent};
 
@@ -72,7 +72,7 @@ enum Terminate {
 
 impl BeamState {
     /// Creates a new state that starts execution at the specified entry point
-    fn new<'a>(entry: InstructionPtr, args: &'a [LocalTerm]) -> BeamState {
+    fn new(entry: InstructionPtr, args: &[LocalTerm]) -> BeamState {
         BeamState {
             x: Vec::from(args),
             y: Vec::new(),
@@ -205,7 +205,7 @@ impl BeamInterpreter {
                 let YRegister::StkFrame(ref cp, stop) = self.state.y[self.state.stop - 1] else {
                     panic!("corrupted stack frame");
                 };
-                self.state.cp = cp.clone();
+                self.state.cp.clone_from(cp);
                 self.state.stop = stop;
                 Ok(())
             },
@@ -307,8 +307,8 @@ impl BeamInterpreter {
                     // the value corresponding to K is fetched and put into V
                     let (chunks, []) = spec.as_chunks::<2>() else { bad_insn!() };
                     for [left, right] in chunks {
-                        let ref left = self.state.get_operand(left)?;
-                        let Some(value) = src.0.get(left) else { jump!(self, *fail) };
+                        let left = self.state.get_operand(left)?;
+                        let Some(value) = src.0.get(&left) else { jump!(self, *fail) };
                         self.state.assign_to_operand(right, value.clone())?;
                     }
                     Ok(())
@@ -321,11 +321,11 @@ impl BeamInterpreter {
                 let arity: usize = arity.try_into().map_err(|_| Terminate::BadInsn)?;
                 let LocalTerm::Tuple(src) = src else { jump!(self, *fail) };
                 if src.len() != arity { jump!(self, *fail) };
-                if src.get(0) != Some(&tag) { jump!(self, *fail) };
+                if src.first() != Some(&tag) { jump!(self, *fail) };
                 Ok(())
             },
 
-            (Opcode::Badmatch, [Some(arg), ..]) => { // TODO: not ignore arg
+            (Opcode::Badmatch, [Some(_arg), ..]) => { // TODO: not ignore arg
                 Err(Terminate::Badmatch)
             },
 
@@ -362,6 +362,7 @@ impl BeamInterpreter {
 
 /// The errors of [BeamInterpreter::new]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)]
 pub enum BeamInterpreterMakeError {
     /// Application not found in local context
     NoApp,

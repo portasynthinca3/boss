@@ -1,7 +1,6 @@
 //! Execution and scheduling
 
-use alloc::{boxed::Box, collections::VecDeque, rc::Rc, vec::Vec};
-use core::cell::RefCell;
+use alloc::{boxed::Box, collections::VecDeque};
 
 use hashbrown::{HashMap, HashSet};
 
@@ -221,7 +220,7 @@ impl Schedule for PrimitiveScheduler {
         match status {
             ExecuteStatus::Exited => {
                 self.context.messenger.as_mut().unwrap().local_executables.remove(&exec_id);
-                self.executables.remove(&exec_id); ()
+                self.executables.remove(&exec_id);
             },
             ExecuteStatus::Running => {
                 exec.get_common_state_mut().status = ExecuteStatus::Ready;
@@ -265,7 +264,7 @@ impl Schedule for PrimitiveScheduler {
         Ok(id)
     }
 
-    fn remove(&mut self, id: Eid) {
+    fn remove(&mut self, _id: Eid) {
         todo!();
     }
 }

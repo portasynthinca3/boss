@@ -3,7 +3,7 @@
 //! implement. Everything else around this module and its descendants is more or
 //! less just a generic microkernel.
 
-use alloc::{format, boxed::Box, rc::Rc};
+use alloc::{format, rc::Rc};
 
 use app::Application;
 use hashbrown::HashMap;

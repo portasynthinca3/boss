@@ -1,11 +1,11 @@
 //! Common VM state structures
 
 use core::{fmt::Debug, hash::Hash};
-use alloc::{boxed::Box, rc::{Rc, Weak}, vec::Vec};
+use alloc::rc::{Rc, Weak};
 
 use hashbrown::HashMap;
 
-use super::{app::Application, module::Module, scheduler::{Eid, LocalTransferAgent, TransferAgent}, term::LocalTerm};
+use super::{app::Application, scheduler::LocalTransferAgent, term::LocalTerm};
 
 /// Opaque reference to an entry in the atom table. For more information, refer
 /// to [LocalTerm::Atom]
@@ -29,9 +29,6 @@ impl From<&LocalAtomRef> for Rc<str> {
 impl PartialEq for LocalAtomRef {
     fn eq(&self, other: &Self) -> bool {
         self.0 == other.0
-    }
-    fn ne(&self, other: &Self) -> bool {
-        self.0 != other.0
     }
 }
 
@@ -58,16 +55,16 @@ impl core::fmt::Debug for LocalAtomRef {
 
 impl PartialOrd for LocalAtomRef {
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
-        use core::cmp::Ordering;
-        if self == other { return Some(Ordering::Equal) };
-        if self.get_str() > other.get_str() { return Some(Ordering::Greater) };
-        Some(Ordering::Less)
+        Some(self.cmp(other))
     }
 }
 
 impl Ord for LocalAtomRef {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        self.partial_cmp(other).unwrap()
+        use core::cmp::Ordering;
+        if self == other { return Ordering::Equal };
+        if self.get_str() > other.get_str() { return Ordering::Greater };
+        Ordering::Less
     }
 }
 

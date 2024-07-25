@@ -31,10 +31,10 @@ impl Execute for LogPort {
 
             // deconstruct message
             let LocalTerm::Tuple(message) = message else { continue };
-            let Some(LocalTerm::Pid(sender)) = message.get(0) else { continue };
+            let Some(sender_term @ LocalTerm::Pid(sender)) = message.first() else { continue };
             let Some(message) = message.get(1) else { continue };
             let LocalTerm::Tuple(message) = message else { continue };
-            let Some(conversation) = message.get(0) else { continue };
+            let Some(conversation) = message.first() else { continue };
             let LocalTerm::Reference(_) = conversation else { continue };
             let Some(request) = message.get(1) else { continue };
             let Some(token) = message.get(2) else { continue };
@@ -51,9 +51,9 @@ impl Execute for LogPort {
                     LocalTerm::Tuple(vec![error_atom.clone(), instantiated_atom.clone()])
                 },
                 r if *r == write_atom && Some(token) == self.token.as_ref() => {
-                    if let Some(LocalTerm::BitString(_, message)) = args.get(0)
+                    if let Some(LocalTerm::BitString(_, message)) = args.first()
                     && let Ok(message) = core::str::from_utf8(message) {
-                        log::info!("process {sender:?} says: {message}");
+                        log::info!("process {sender_term:?} says: {message}");
                         ok_atom.clone()
                     } else {
                         LocalTerm::Tuple(vec![error_atom.clone(), badarg_atom.clone()])

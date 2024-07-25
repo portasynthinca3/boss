@@ -1,6 +1,6 @@
 //! Erlang Term implementation
 
-use core::{array::TryFromSliceError, hash::{Hash, Hasher, SipHasher}, ops::Deref};
+use core::{array::TryFromSliceError, hash::{Hash, Hasher, SipHasher}};
 use alloc::{boxed::Box, string::String, vec::Vec};
 
 use hashbrown::HashMap;
@@ -74,12 +74,12 @@ impl core::fmt::Debug for MapTerm {
 
 impl PartialOrd for MapTerm {
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
-        todo!()
+        Some(self.cmp(other))
     }
 }
 
 impl Ord for MapTerm {
-    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+    fn cmp(&self, _other: &Self) -> core::cmp::Ordering {
         todo!()
     }
 }
@@ -164,7 +164,7 @@ impl core::fmt::Debug for LocalTerm {
             Reference(parts) => {
                 let mut hash = SipHasher::default();
                 parts.hash(&mut hash);
-                write!(f, "#Ref<{:016x}>", hash.finish())
+                write!(f, "#Ref<{:04x}>", hash.finish() & 0xffff)
             },
             Pid(Eid(sched, seq)) => write!(f, "<{sched}.{seq}>"),
             Port(Eid(sched, seq)) => write!(f, "#Port<{sched}.{seq}>"),
@@ -183,7 +183,7 @@ impl core::fmt::Debug for LocalTerm {
                 let is_probable_charlist = elements.iter().all(|elem| {
                     let LocalTerm::Integer(int) = elem else { return false };
                     let Ok(int): Result<usize, _> = int.try_into() else { return false };
-                    int >= 32 && int <= 127
+                    (32..=127).contains(&int)
                 });
 
                 if is_probable_charlist {
@@ -244,13 +244,13 @@ impl From<Eid> for LocalTerm {
         if value.1 >= PORT_START {
             Self::Port(value)
         } else {
-            Self::Port(value)
+            Self::Pid(value)
         }
     }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, FromRepr, Debug)]
-enum EtfTag {
+pub enum EtfTag {
     SmallInteger = 97,
     Integer = 98,
     Float = 99,
@@ -336,7 +336,7 @@ impl LocalTerm {
             return Err(TermError::TagError);
         }
 
-        return Ok((&tuple[1 .. tuple.len()]).try_into().unwrap());
+        Ok((&tuple[1 .. tuple.len()]).try_into().unwrap())
     }
 
     /// Returns an atom reference if the term is an atom

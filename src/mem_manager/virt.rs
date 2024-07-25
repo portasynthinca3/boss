@@ -892,10 +892,10 @@ impl<'guard, 'r> AddressSpaceGuard<'guard, 'r> {
         // find unused mutex slot
         let mut slot: Option<(usize, &Mutex<()>)> = None;
         let mut guard = SUBSPACE_REGISTRY_SLOTS.write();
-        for i in 0..MAX_SUBSPACES {
+        for (i, entry) in SUBSPACE_REGISTRY.iter().enumerate().take(MAX_SUBSPACES) {
             if !(*guard)[i] {
                 (*guard)[i] = true;
-                slot = Some((i, &SUBSPACE_REGISTRY[i]));
+                slot = Some((i, entry));
                 break;
             }
         }

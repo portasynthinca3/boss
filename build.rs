@@ -47,7 +47,7 @@ fn main() {
         impl_str.push_str(format!("            Self::{name} => {arity},\n").as_str());
     }
 
-    enum_str.push_str("}");
+    enum_str.push('}');
     impl_str.push_str("        }\n    }\n}");
 
     fs::write(dest_path, format!(

@@ -43,7 +43,6 @@ use strum::VariantArray;
 use crate::mem_manager::{phys, reloc::Relocatable, PAGE_SIZE, VirtAddr, virt::AddressSpace};
 use crate::segment::*;
 use crate::virt::TableAttrs;
-use crate::hal::io_port::Port;
 
 /// Disables interrupts. It is recommended to only keep them that way for a very
 /// short amount of time, enabling them back with [`enable_external`] as soon as
