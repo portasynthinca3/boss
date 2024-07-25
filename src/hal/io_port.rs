@@ -60,15 +60,24 @@ pub struct Port<T: PortAccessible> {
 }
 
 impl<T: PortAccessible> Port<T> {
-    pub fn new(number: u16) -> Port<T> {
+    /// Instantiates a [Port]
+    /// 
+    /// # Safety
+    /// Care must be taken not to instantiate multiple instances of [Port] that
+    /// use the same I/O port, otherwise race conditions may occur.
+    pub unsafe fn new(number: u16) -> Port<T> {
         Port { number, phantom: PhantomData }
     }
 
     pub fn read(&self) -> T {
+        // SAFETY: accessing an I/O port is memory safe, but may lead to race
+        // conditions. It is the responsibility of the API user to make sure
+        // that this doesn't happen. See [Port::new]
         unsafe { T::read(self.number) }
     }
 
     pub fn write(&self, value: T) {
+        // SAFETY: see [Port::read]
         unsafe { T::write(self.number, value) }
     }
 }

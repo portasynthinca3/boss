@@ -37,7 +37,7 @@ impl SerialPort {
     pub fn new(number: usize) -> SerialPort {
         // create array of IO ports 
         let base = PORT_BASES[number];
-        let io_ports: [Port<u8>; 8] = core::array::from_fn(|i| Port::new(base + i as u16));
+        let io_ports: [Port<u8>; 8] = core::array::from_fn(|i| unsafe { Port::new(base + i as u16) });
 
         // create port and apply default configuration
         let mut port = SerialPort { io_ports };

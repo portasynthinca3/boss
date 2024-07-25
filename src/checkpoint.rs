@@ -25,12 +25,10 @@ pub enum Checkpoint {
     /// Heap allocation available
     Heap,
     /// All CPUs online
-    SmpOnline,
+    // SmpOnline,
     /// BEAM structures initialized
     BeamInitd,
-    /// Initial argument constructed
-    BeamInitArg,
-    /// Created process running `main:main/1` from the base image
+    /// Created process running `main:main/2` from the base image
     Running,
 }
 

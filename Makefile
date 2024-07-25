@@ -8,11 +8,11 @@ clean:
 	mkdir build
 
 # Emulator (the EFI executable)
-PROFILE=release
-PROFILE_DIR=release
-CARGOFLAGS=--target x86_64-unknown-uefi-debug.json -Zbuild-std=core,compiler_builtins,alloc -Zbuild-std-features=compiler-builtins-mem
-MAGIC_SECTION_OFFSET=0x140800000
-RELOC_SECTION_OFFSET=0x140801000
+PROFILE=dev
+PROFILE_DIR=debug
+CARGOFLAGS=--target x86_64-unknown-uefi-debug.json -Zbuild-std=core,compiler_builtins,alloc -Zbuild-std-features=compiler-builtins-mem --features=trace-messages
+MAGIC_SECTION_OFFSET=0x141000000
+RELOC_SECTION_OFFSET=0x141001000
 emu:
 	cargo build $(CARGOFLAGS) --profile $(PROFILE)
 	cargo clippy $(CARGOFLAGS) --profile $(PROFILE)
@@ -32,11 +32,13 @@ ERL_OUT=build/ebin
 ebin: $(ERL_SOURCES)
 	mkdir -p $(ERL_OUT)
 	erlc $(ERLC_FLAGS) -o $(ERL_OUT) $(ERL_SOURCES)
+	src/etfify base/base.app.src $(ERL_OUT)/base.app
 
 # BOSS Base Image, a collection of base BEAM files
 bosbaima: ebin
 	date > build/date
-	tar cf build/bosbaima.tar build/ebin/ build/date
+	cp base/emu.cfg build/emu.cfg
+	tar cf build/bosbaima.tar -C build/ ebin/ date emu.cfg
 
 esp: emu bosbaima
 	mkdir -p build/esp/{EFI/BOOT,BOSS}

@@ -715,7 +715,8 @@ impl<'guard, 'r> AddressSpaceGuard<'guard, 'r> {
     /// 
     /// The callback is expected to apply modifications to the table as it
     /// desires. If must return a boolean that signals whether any changes were
-    /// made.
+    /// made. Returning `false` when a change has been made is a logic error
+    /// that may leave the memory map in an inconsistent state.
     fn iterate_over_range_mut(
         &mut self,
         addresses: RangeInclusive<VirtAddr>,

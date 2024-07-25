@@ -21,12 +21,13 @@ use uefi::{
         }
     },
 };
-use crate::util::byte_size::ByteSize;
-use crate::{checkpoint, checkpoint::Checkpoint};
-use spin::RwLock;
+use spin::Once;
 
-/// Holds the binary image
-static BINARY: RwLock<Option<&[u8]>> = RwLock::new(None);
+use crate::{reloc::Relocatable, util::{byte_size::ByteSize, tar::TarFile}};
+use crate::{checkpoint, checkpoint::Checkpoint};
+
+/// Holds the base image
+static IMAGE: Once<TarFile<'static>> = Once::new();
 
 /// Loads the BBI into memory and returns a static slice.
 /// 
@@ -71,14 +72,20 @@ pub fn load(executable_handle: Handle, system_table: &SystemTable<Boot>) -> uefi
     let bbi_size = bbi_info.file_size() as usize;
     log::info!("base image size: {}", ByteSize(bbi_size));
 
-    // allocate memory for file
-    let file_ptr = system_table.boot_services().allocate_pool(MemoryType::LOADER_DATA, bbi_size)?;
+    // allocate memory for and read file
+    let mut file_ptr = system_table.boot_services().allocate_pool(MemoryType::LOADER_DATA, bbi_size)?;
     let file_buf = unsafe { core::slice::from_raw_parts_mut(file_ptr, bbi_size) };
-
-    // read file
     bosbaima.read(file_buf)?;
 
-    *BINARY.write() = Some(file_buf);
+    // relocate and assign file buffer
+    file_ptr.relocate();
+    let file_buf = unsafe { core::slice::from_raw_parts(file_ptr, bbi_size) };
+    IMAGE.call_once(|| TarFile::new(file_buf));
+    
     checkpoint::advance(Checkpoint::BaseImageLoaded).unwrap();
     Ok(())
+}
+
+pub fn get() -> &'static TarFile<'static> {
+    IMAGE.get().unwrap()
 }

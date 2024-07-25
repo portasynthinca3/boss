@@ -1,0 +1,21 @@
+#!/usr/bin/env escript
+%% -*- erlang -*-
+%% Converts a sequence of Erlang terms in a file into binary ETF (External Term
+%% Format).
+
+main([Input, Output]) when is_list(Input) and is_list(Output) ->
+    {ok, Terms} = file:consult(Input),
+    {ok, OutFile} = file:open(Output, [write]),
+    Etf = [term_to_binary(Term) || Term <- Terms],
+    save(OutFile, Etf);
+
+main(_) ->
+    io:format("usage: etfify <input> <output>"),
+    halt(1).
+
+save(Out, [Etf | Others]) ->
+    ok = file:write(Out, Etf),
+    save(Out, Others);  
+
+save(Out, []) ->
+    ok = file:close(Out).

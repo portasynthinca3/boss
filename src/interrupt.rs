@@ -567,7 +567,7 @@ impl Manager {
 
     /// Sets the function that will be called when an interrupt occurs. This
     /// function is provided with a mutable reference to the state that the CPU
-    /// was is when it was interrupted. The handler is free to modify it; any
+    /// was in when it was interrupted. The handler is free to modify it; any
     /// changes that it makes will be applied once it returns.
     /// 
     /// If the vector is for an internal interrupt (i.e. an exception), then the

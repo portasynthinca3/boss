@@ -12,6 +12,10 @@
     slice_ptr_get,
     non_null_convenience,
     alloc_layout_extra,
+    generic_arg_infer,
+    generic_const_exprs,
+    never_type,
+    slice_as_chunks,
 )]
 #![allow(dead_code)]
 
@@ -21,9 +25,8 @@ use core::{arch::asm, panic::PanicInfo};
 use uefi::{
     prelude::*,
     table::boot::MemoryType,
-    proto::loaded_image::LoadedImage,
+    proto::loaded_image::LoadedImage,   
 };
-use alloc::{boxed::Box, string::String, vec};
 
 use hal::serial::SerialLogger;
 use mem_manager::*;
@@ -36,6 +39,8 @@ mod bosbaima;
 mod util;
 mod interrupt;
 mod segment;
+mod vm;
+mod ll;
 
 #[cfg(not(test))]
 #[panic_handler]
@@ -107,15 +112,19 @@ extern "C" fn after_reloc(_data: &()) -> ! {
     checkpoint::advance(Checkpoint::Interrupts).unwrap();
 
     // unmap lower half
-    {
-        let mut guard = addr_space.modify();
-        guard.unmap_range(VirtAddr::from_usize(0)..=VirtAddr::from_usize(0x0000_7fff_ffff_ffff)).unwrap();
-    }
+    addr_space.modify().unmap_range(VirtAddr::from_usize(0)..=VirtAddr::from_usize(0x0000_7fff_ffff_ffff)).unwrap();
     checkpoint::advance(Checkpoint::RelocDone).unwrap();
 
     // initialize global allocator
     unsafe { malloc::initialize_default(addr_space) };
     checkpoint::advance(Checkpoint::Heap).unwrap();
+
+    // start the VM
+    vm::init(bosbaima::get()).unwrap();
+    // unsafe { vm::executor::Pls::init() };
+    // let date = core::str::from_utf8(bosbaima::get().read_file("date").unwrap()).unwrap().trim();
+    // log::info!("base image built on {date}");
+    // let main_mod = vm::module::Module::new(bosbaima::get().read_file("ebin/main.beam").unwrap()).unwrap();
 
     loop {
         unsafe { asm!("hlt"); }

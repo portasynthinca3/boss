@@ -90,7 +90,7 @@ impl PageRangeHeader {
         let header_ptr = desc.phys_start as *mut PageRangeHeader;
         unsafe {
             *header_ptr = header;
-            &mut *header_ptr
+            header_ptr.as_uninit_mut().unwrap().assume_init_mut()
         }
     }
 
@@ -250,6 +250,10 @@ pub fn init(mem_map: &MemoryMap) {
         let size = entry.page_count as usize * PAGE_SIZE;
         log::debug!("uefi: {:#018x} to {:#018x} {:?}",
             entry.phys_start, entry.phys_start as usize + size, entry.ty);
+
+        // skip ranges starting at address zero
+        // (i know, i know :c)
+        if entry.phys_start == 0 { continue; }
         
         // check whether the range is usable
         match entry.ty {
