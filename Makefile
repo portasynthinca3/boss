@@ -20,7 +20,7 @@ emu:
 	dd if=/dev/random of=build/rand bs=1 count=1024
 	dd if=/dev/zero of=build/zero bs=1 count=1
 	cat build/rand build/rand > build/reloc-magic
-	objdump -hj.data build/emulator.efi | tail -n+6 | head -n1 >> build/reloc-magic
+	objdump -hj.data target/x86_64-boss-uefi/$(PROFILE_DIR)/boss.efi | tail -n+6 | head -n1 >> build/reloc-magic
 	cat build/zero >> build/reloc-magic
 	objcopy target/x86_64-boss-uefi/$(PROFILE_DIR)/boss.efi \
 		--add-section .reloc-magic=build/reloc-magic \
