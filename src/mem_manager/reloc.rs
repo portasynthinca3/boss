@@ -186,24 +186,27 @@ struct PeRelocEntry {
 }
 
 /// Relocates all pointers that were created during compilation, such as statics
-/// and function pointers. Does not relocate references and pointers that were
-/// generated at runtime - they need to be relocated manually, for example using
-/// the [Relocatable] trait.
+/// and function pointers. Also relocates pointers created at runtime that
+/// reside in static variables. Does not relocate other references and pointers
+/// that were generated at runtime - they need to be relocated manually, for
+/// example using the [Relocatable] trait.
 pub fn relocate_pe(image_info: (*const core::ffi::c_void, u64)) {
     let image = image_info.0 as *mut u8;
     let img_len = image_info.1 as usize;
 
     // The binary has a special marker page, followed by one or more pages with
     // relocation data in the PE format, finally followed by the end of the
-    // image. That marker page is 2048 bytes of random data, followed by the
-    // same random data. Because there's just that much random data used as the
-    // marker, it is just as likely for us to mistake other data for the marker
-    // as it is for someone to guess 64 AES-256 keys at once.
+    // image. That marker page is 1024 bytes of random data, followed by the
+    // same random data, followed by a description of the `.data` section.
+    // Because there's just that much random data used as the marker, it is just
+    // as likely for us to mistake other data for the marker as it is for
+    // someone to guess 32 AES-256 keys at once.
 
     // find start of relocation data
     // SAFETY: image is static, an allocation boundary is not crossed. Other
     // contract points are trivial to prove.
     let mut reloc_data = unsafe { image.byte_add(img_len - PAGE_SIZE) };
+    let data_sect_desc;
     loop {
         if reloc_data == image {
             panic!("reached start of image searching for magic marker page");
@@ -212,11 +215,13 @@ pub fn relocate_pe(image_info: (*const core::ffi::c_void, u64)) {
         // check if page is a magic marker (read large comment for explanation)
         // SAFETY: an allocation boundary is not crossed, ptr is aligned by 4096
         // bytes, other contract points are trivial to prove.
-        let first_half = unsafe { slice::from_raw_parts(reloc_data, PAGE_SIZE / 2) };
+        let first_half = unsafe { slice::from_raw_parts(reloc_data, PAGE_SIZE / 4) };
         // SAFETY: combines points from the previous safety declarations
-        let second_half = unsafe { slice::from_raw_parts(reloc_data.byte_add(PAGE_SIZE / 2), PAGE_SIZE / 2) };
+        let second_half = unsafe { slice::from_raw_parts(reloc_data.byte_add(PAGE_SIZE / 4), PAGE_SIZE / 4) };
         if first_half == second_half {
             // found magic marker page, relocation info starts after it
+            // SAFETY: read first safety declaration
+            data_sect_desc = unsafe { reloc_data.byte_add(PAGE_SIZE / 2) };
             // SAFETY: read first safety declaration
             reloc_data = unsafe { reloc_data.byte_add(PAGE_SIZE) };
             break;
@@ -228,6 +233,7 @@ pub fn relocate_pe(image_info: (*const core::ffi::c_void, u64)) {
 
     let relocation_offset = EMULATOR_BASE.0;
     assert!(relocation_offset & 0xFFFF_FFFF == 0);
+    log::trace!(".reloc section at {reloc_data:#x?}");
 
     // read relocation data
     loop {
@@ -235,7 +241,7 @@ pub fn relocate_pe(image_info: (*const core::ffi::c_void, u64)) {
         // SAFETY: image is static, an allocation boundary is not crossed;
         // pointer is aligned by at least two bytes; data is of that type thanks
         // to the PE spec and build system.
-        let blk_header = unsafe { mem::transmute::<_, *const PeRelocBlkHdr>(reloc_data).read_unaligned() };
+        let blk_header = unsafe { mem::transmute::<*mut u8, *const PeRelocBlkHdr>(reloc_data).read_unaligned() };
         // SAFETY: read previous safety declaration
         reloc_data = unsafe { reloc_data.byte_add(size_of::<PeRelocBlkHdr>()) };
         let entry_cnt = (blk_header.size() as usize - size_of::<PeRelocBlkHdr>()) / size_of::<PeRelocEntry>();
@@ -245,6 +251,7 @@ pub fn relocate_pe(image_info: (*const core::ffi::c_void, u64)) {
         if blk_header.size() == 0
         || entry_cnt > PAGE_SIZE / 4
         || blk_header.page() > img_len as u32 {
+            log::trace!("stopping at {reloc_data:#x?}: {blk_header:x?}");
             break;
         }
 
@@ -254,10 +261,13 @@ pub fn relocate_pe(image_info: (*const core::ffi::c_void, u64)) {
             if entry_idx >= entry_cnt { break; }
 
             // SAFETY: read previous safety declaration
-            let entry = unsafe { *mem::transmute::<_, *const PeRelocEntry>(reloc_data) };
+            let entry = unsafe { *mem::transmute::<*mut u8, *const PeRelocEntry>(reloc_data) };
             let entry_type = PeRelocType::from_repr(entry.e_type().into());
             // SAFETY: read previous safety declaration
             let field_ptr = unsafe { image.byte_add(blk_header.page() as usize + entry.page_offset() as usize) };
+            if (field_ptr as usize) >= 0x460b000 && (field_ptr as usize) < 0x460c000 {
+                // log::trace!("{field_ptr:?}");
+            }
 
             match entry_type {
                 None => panic!("invalid relocation type {}", entry.e_type()),
@@ -286,6 +296,56 @@ pub fn relocate_pe(image_info: (*const core::ffi::c_void, u64)) {
             // SAFETY: read safety declaration at beginning of outer loop
             reloc_data = unsafe { reloc_data.byte_add(size_of::<PeRelocEntry>() * entry_occupies_slots) };
             entry_idx += entry_occupies_slots;
+        }
+    }
+
+    // Here's the really scary part: relocating pointers stored in `static`s
+    // that were created at runtime.
+    //
+    // This is really bad. If something breaks, this is the first place to look
+    // at. This is very bad. This is extraordinarily bad.
+    //
+    // I won't write any `SAFETY` declarations because this is unsafe and bad.
+    // There's just no other way to put it. I'm sorry, I've been fighting the
+    // linker for the better part of the last 24 hours in order to do this
+    // less wrongly, but I failed.
+    //
+    // Here's the problem: I'm stupid and I want the kernel to relocate itself
+    // to the upper half of the memory space. Usually this is done by the
+    // bootloader, but I'm stupid and lazy. Relocation is actually performed by
+    // the firmware at load time using the same data that we used in the huge
+    // block of code above - that's fine. The problem is that rustc starting
+    // with version `nightly-2024-04-17` generates code that generates pointers
+    // to statics and puts them in other statics. I was able to pin it down to a
+    // specific commit:
+    //     https://github.com/rust-lang/rust/commit/38104f3a8838f8662ad3cccc4d7262a96bf9724e
+    // ...but it seems unrelated. It's about ZSTs? I dunno. But it broke my
+    // code. It's not at fault - I think that no toolchain for any language on
+    // this beautiful earth supports what I want to do.
+    //
+    // The proper solution is to write or use a bootloader that will relocate
+    // the kernel before it even starts executing. But no. If you are not me and
+    // you are terrified with what I'm about to do a few lines below, you can
+    // submit a PR. Thanks for sticking around till the end of this comment.
+
+    // Aight. There's a line in the marker page taken straight from `objdump`
+    // describing the `.data` section. We need to parse it, extracting the addr
+    // and size of that section.
+    let data = unsafe { core::slice::from_raw_parts(data_sect_desc, PAGE_SIZE / 2) };
+    let objdump_line = crate::util::from_null_term(data).expect("no string describing .data section");
+    let mut columns = objdump_line.split(' ').filter(|c| !c.is_empty());
+    let data_size = usize::from_str_radix(columns.nth(2).expect("no size column"), 16).expect("bad data in size column");
+    let data_start = usize::from_str_radix(columns.next().expect("no address column"), 16).expect("bad data in address column")
+        - 0x140000000 + image as usize;
+    let statics = unsafe { core::slice::from_raw_parts_mut(data_start as *mut usize, data_size / size_of::<usize>()) };
+
+    // The `statics` variable now contains a view on all `static` variables as a
+    // usize slice. See which numbers point to memory in the kernel image and
+    // relocate them.
+    for number in statics.iter_mut() {
+        if *number >= image as usize && *number < (image as usize + img_len) {
+            log::debug!("footgun: {number:#x} at {:?}", number as *const usize);
+            *number += relocation_offset;
         }
     }
 }

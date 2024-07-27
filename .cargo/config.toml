@@ -1,16 +1,14 @@
-[build]
-rustflags = [
-    # "-Clink-args=/debug:dwarf",
-]
+[profile.dev]
+debug = true
 
 [profile.dev.build-override]
 incremental = false
+opt-level = 0
 rustflags = [
     "-Cembed-bitcode=no",
     "-Crelocation-model=pie",
     "-Cdebuginfo=2",
     "-Zmacro-backtrace",
-    # "-Clink-args=/debug:dwarf",
 ]
 
 [profile.release.build-override]

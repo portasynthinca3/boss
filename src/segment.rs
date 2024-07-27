@@ -212,13 +212,13 @@ impl Selector {
             SelectorRegister::Code => asm!(
                 // push selector and address of instruction after this asm block
                 "push {0:r}",
-                "lea {1}, [0f]",
+                "lea {1}, [2f]",
                 "mov {2}, 0xffff800000000000", // relocate
                 "or {1}, {2}",
                 "push {1}",
                 // perform far return, effectively loading new selector
                 "retfq",
-                "0:",
+                "2:",
                 in(reg) self.0,
                 out(reg) _,
                 out(reg) _),

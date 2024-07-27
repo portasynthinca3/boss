@@ -3,14 +3,11 @@
 #![no_main]
 #![no_std]
 #![feature(
-    panic_info_message,
     naked_functions,
     allocator_api,
-    inline_const,
     let_chains,
     ptr_as_uninit,
     slice_ptr_get,
-    non_null_convenience,
     alloc_layout_extra,
     generic_arg_infer,
     generic_const_exprs,
@@ -47,7 +44,7 @@ mod ll;
 #[panic_handler]
 fn panic_handler(info: &PanicInfo) -> ! {
     log::error!("EMULATOR PANIC at {}:", info.location().unwrap().clone());
-    log::error!("{}", info.message().unwrap().clone());
+    log::error!("{}", info.message());
     log::error!("checkpoint: {:?}", checkpoint::get());
     loop {
         unsafe { asm!("hlt"); }

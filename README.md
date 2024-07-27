@@ -14,7 +14,7 @@ system written in Erlang together with Rust. Its distinctive features include:
 
 This project strives to achieve the following, in order of decreasing
 importance:
-  - get the implementation to work;
+  - get the implementation working;
   - make the implementation correct;
   - make the implementation fast.
 
@@ -94,22 +94,25 @@ goes for the supervision tree model that forms the basis of Erlang/OTP.
 ## Checklist
 Emulator:
   - [x] Hello, World!
-  - [x] Logging
-  - [x] Physical memory management
-  - [x] Virtual memory management
-  - [x] Relocation
-  - [x] Interrupt handling
-  - [x] Heap
-  - [x] BEAM bytecode parsing
-  - [x] BEAM code execution
-  - [x] Basic ports
-  - [x] Small code cleanup before public release
-  - [ ] Large stylistic cleanup
-  - [ ] SMP
-  - [ ] Advanced ports
-  - [ ] Performance enhancements
-  - [ ] Secure NIFs in ring 3
-  - [ ] Compatibility sandbox for OTP applications
+  - [x] The hardware world
+    - [x] Logging
+    - [x] Physical memory management
+    - [x] Virtual memory management
+    - [x] Relocation
+    - [x] Interrupt handling
+    - [x] Heap - MVP
+    - [ ] Memory caching support
+    - [ ] Basic ACPI parser
+    - [ ] APIC driver
+    - [ ] SMP
+  - [x] The BEAM world
+    - [x] BEAM bytecode parsing
+    - [x] BEAM code execution
+    - [x] Basic ports - MVP
+    - [ ] Advanced ports
+    - [ ] Performance enhancements
+    - [ ] Secure NIFs in ring 3
+    - [ ] Compatibility sandbox for OTP applications
 
 Base image:
   - [x] Hello, World!
@@ -131,8 +134,7 @@ Base image:
 ## I wanna run it!!!!
 I see that I'm not the only one fueled by bad decisions. Anyways, you will need:
   - Git
-  - A nightly Rust toolchain. I don't know the MSRV yet; your best bet is to
-    just get the latest version.
+  - Rust v1.82-nightly
   - Make
   - Erlang
   - QEMU

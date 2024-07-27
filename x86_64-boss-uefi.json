@@ -21,25 +21,15 @@
   "lld-flavor": "link",
   "llvm-target": "x86_64-unknown-windows",
   "max-atomic-width": 64,
-  "metadata": {
-    "description": null,
-    "host_tools": null,
-    "std": null,
-    "tier": null
-  },
   "os": "uefi",
   "panic-strategy": "abort",
   "plt-by-default": false,
   "pre-link-args": {
-    "msvc": [
-      "/NOLOGO",
-      "/entry:efi_main",
-      "/subsystem:efi_application"
-    ],
     "msvc-lld": [
       "/NOLOGO",
       "/entry:efi_main",
-      "/subsystem:efi_application"
+      "/subsystem:efi_application",
+      "/debug:dwarf"
     ]
   },
   "singlethread": true,

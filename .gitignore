@@ -3,3 +3,4 @@
 /.vscode
 /.gdbinit
 /.gdb_history
+/qemu.log
