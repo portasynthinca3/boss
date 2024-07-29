@@ -97,8 +97,8 @@ impl Operand {
                 },
                 0b11 => {
                     // large or very large value
-                    let size = ((tag >> 3) & 0b11111) as usize;
-                    let size = if size == 0x1f {
+                    let size = ((tag >> 5) & 0b111) as usize;
+                    let size = if size == 0b111 {
                         // very large value (>= 9 bytes)
                         // size is contained in nested unsigned operand
                         if let Operand::Number(size) = Self::read(cursor, module_atoms, literal_map)? {
@@ -358,14 +358,14 @@ impl Module {
         labels.push(0);
         let mut cursor = Cursor::new(code);
         let mut instruction_ctr = 0;
-        // #[cfg(feature = "trace-beam")]
-        // log::trace!("module disassembly:");
+        #[cfg(feature = "trace-beam")]
+        log::trace!("module '{}' disassembly:", module_atoms[0]);
         loop {
             // read next instruction
             if cursor.reached_end() { break; }
             let instruction = Instruction::read(&mut cursor, &module_atoms, &literals)?;
-            // #[cfg(feature = "trace-beam")]
-            // log::trace!("\x1b[38;5;238m{instruction_ctr: >4}: {instruction:#?}");
+            #[cfg(feature = "trace-beam")]
+            log::trace!("\x1b[38;5;238m{instruction_ctr: >4}: {instruction:#?}");
 
             // remember labels
             if instruction.opcode == Opcode::Label {

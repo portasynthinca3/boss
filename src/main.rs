@@ -6,6 +6,7 @@
     naked_functions,
     allocator_api,
     let_chains,
+    if_let_guard,
     ptr_as_uninit,
     slice_ptr_get,
     alloc_layout_extra,
@@ -63,6 +64,9 @@ fn main(image_handle: Handle, system_table: SystemTable<Boot>) -> Status {
         LOGGER = Some(SerialLogger::new(0));
         log::set_logger(LOGGER.as_ref().unwrap()).unwrap();
     }
+    #[cfg(feature = "log-trace")]
+    log::set_max_level(log::LevelFilter::Trace);
+    #[cfg(not(feature = "log-trace"))]
     log::set_max_level(log::LevelFilter::Info);
 
     // print our address

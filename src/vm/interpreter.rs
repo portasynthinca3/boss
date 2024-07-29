@@ -9,6 +9,7 @@ use super::{module::{Instruction, Module, Opcode, Operand}, scheduler::{CommonSt
 
 #[derive(Clone, Debug)]
 pub struct InstructionPtr {
+    application: LocalAtomRef,
     module: Rc<Module>,
     instruction: usize,
 }
@@ -58,6 +59,12 @@ struct BeamState {
 /// Instruction interpretation should stop and something else should be done
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Terminate {
+    /// Undefined application error
+    NoApp,
+    /// Undefined function error
+    NoFun,
+    /// Undefined module error
+    NoMod,
     /// Match error
     Badmatch,
     /// Bad instruction
@@ -73,8 +80,8 @@ impl BeamState {
     fn new(entry: InstructionPtr, args: &[LocalTerm]) -> BeamState {
         BeamState {
             x: Vec::from(args),
-            y: Vec::new(),
-            stop: 0,
+            y: vec![YRegister::StkFrame(None, 0)],
+            stop: 1,
             loop_rec_ctr: 0,
             ip: entry,
             cp: None,
@@ -128,13 +135,6 @@ impl BeamState {
             _ => Err(Terminate::BadInsn),
         }
     }
-
-    /// Sets up a stack frame
-    fn setup_frame(&mut self, y_regs: usize, cp: Option<InstructionPtr>) {
-        self.y.push(YRegister::StkFrame(cp, self.stop));
-        self.y.extend(iter::repeat(YRegister::Term(LocalTerm::nil())).take(y_regs));
-        self.stop += 1;
-    }
 }
 
 /// Interprets instructions one by one without any optimizations
@@ -167,26 +167,93 @@ impl BeamInterpreter {
     /// Runs a single instruction, transforming the state in the process.
     fn run_insn(&mut self, context: &mut LocalContext, insn: &Instruction) -> Result<(), Terminate> {
         let erlang_atom = context.atom_table.get_or_make_atom("erlang");
+        let true_atom = context.atom_table.get_or_make_atom("true");
+        let false_atom = context.atom_table.get_or_make_atom("false");
 
+        // here goes that ginormous match statement that's in every interpreter
+        // of mine. are there any better ways to do this?
         match (insn.opcode, &insn.operands) {
             (Opcode::Label | Opcode::Line, _) => Ok(()),
+
+            (Opcode::FuncInfo, _) => {
+                Err(Terminate::Badmatch)
+            },
+
+            // ----====----
+            // flow control
+            // ----====----
 
             (Opcode::CallExt, [Some(Operand::Number(arity)), Some(Operand::Number(dest)), ..]) => {
                 let arity: usize = arity.try_into().map_err(|_| Terminate::BadInsn)?;
                 let dest: usize = dest.try_into().map_err(|_| Terminate::BadInsn)?;
                 let (module, fun, import_arity) = self.state.ip.module.imports[dest].clone();
                 if import_arity != arity { bad_insn!(); }
-                if module != erlang_atom { bad_insn!(); } // TODO: actual calls :^)
                 self.state.x.truncate(arity);
-                self.bif(fun, context)
+                if module == erlang_atom {
+                    self.bif(fun, context)
+                } else {
+                    self.state.cp = Some(self.state.ip.clone());
+                    // TODO: far calls
+                    let target_app = context.applications.get(&self.state.ip.application).ok_or(Terminate::NoApp)?;
+                    let target_module = Rc::clone(target_app.modules.get(&module)
+                        .ok_or(Terminate::NoMod)?.as_ref()
+                        .ok_or(Terminate::NoMod)?);
+                    let target_label = *target_module.exports.get(&(fun, arity)).ok_or(Terminate::NoFun)?;
+                    let target_insn = *target_module.labels.get(target_label).ok_or(Terminate::NoFun)?;
+                    self.state.y.push(YRegister::StkFrame(self.state.cp.clone(), self.state.stop));
+                    self.state.stop = self.state.y.len();
+                    self.state.ip = InstructionPtr {
+                        application: self.state.ip.application.clone(),
+                        module: target_module,
+                        instruction: target_insn,
+                    };
+                    Ok(())
+                }
             },
+
+            // literally could not figure out the difference between these two
+            (Opcode::Jump, [Some(Operand::Label(label)), ..]) |
+            (Opcode::CallOnly, [Some(Operand::Number(_)), Some(Operand::Label(label)), ..]) => {
+                jump!(self, *label);
+            },
+
+            (Opcode::Return, [..]) => {
+                if let Some(ref cp) = self.state.cp {
+                    self.state.ip = cp.clone();
+                    Ok(())
+                } else {
+                    Err(Terminate::Normal)
+                }
+            },
+
+            (Opcode::IntCodeEnd, [..]) => bad_insn!(),
+
+            // -----=======-----
+            // memory management
+            // -----=======-----
 
             (Opcode::Allocate, [Some(Operand::Number(stack)), Some(Operand::Number(live)), ..]) => {
                 // deallocate all terms past X[live] and make a stack frame
                 let stack = stack.try_into().map_err(|_| Terminate::BadInsn)?;
                 let live = live.try_into().map_err(|_| Terminate::BadInsn)?;
                 self.state.x.truncate(live);
-                self.state.setup_frame(stack, self.state.cp.clone());
+                self.state.y.extend(iter::repeat(YRegister::Term(LocalTerm::nil())).take(stack));
+                Ok(())
+            },
+
+            (Opcode::Deallocate, [Some(Operand::Number(_)), ..]) => {
+                // the given argument is ignored for safety
+                let Some(YRegister::StkFrame(ref cp, stop)) = self.state.y.get(self.state.stop - 1) else {
+                    log::error!("BEAM stack (stop={})", self.state.stop);
+                    for (i, elem) in self.state.y.iter().enumerate() {
+                        log::error!("{i}: {elem:?}");
+                    }
+                    panic!("corrupted BEAM stack frame");
+                };
+                let old_stop = self.state.stop;
+                self.state.cp.clone_from(cp);
+                self.state.stop = *stop;
+                self.state.y.truncate(old_stop - 1);
                 Ok(())
             },
 
@@ -199,23 +266,18 @@ impl BeamInterpreter {
                 Ok(())
             },
 
-            (Opcode::Deallocate, [Some(Operand::Number(_)), ..]) => {
-                let YRegister::StkFrame(ref cp, stop) = self.state.y[self.state.stop - 1] else {
-                    panic!("corrupted stack frame");
-                };
-                self.state.cp.clone_from(cp);
-                self.state.stop = stop;
+            (Opcode::Trim, [Some(Operand::Number(_how_much)), Some(Operand::Number(remaining)), ..]) => {
+                let remaining: usize = remaining.try_into().map_err(|_| Terminate::BadInsn)?;
+                self.state.y.truncate(self.state.stop + remaining);
                 Ok(())
             },
 
-            (Opcode::Return, [..]) => {
-                if let Some(ref cp) = self.state.cp {
-                    self.state.ip = cp.clone();
-                    Ok(())
-                } else {
-                    Err(Terminate::Normal)
-                }
-            },
+            // all registers are already initialized with nil
+            (Opcode::InitYregs, [Some(Operand::List(_regs)), ..]) => Ok(()),
+
+            // ---===---
+            // messaging
+            // ---===---
 
             (Opcode::Send, [..]) => {
                 if self.state.x.len() < 2 { bad_insn!(); }
@@ -251,18 +313,110 @@ impl BeamInterpreter {
                 Err(Terminate::EnterWait)
             },
 
+            (Opcode::WaitTimeout, [Some(Operand::Label(cont)), Some(time), ..]) => {
+                self.state.loop_rec_ctr = 0;
+                self.state.ip.instruction = self.state.ip.module.labels[*cont];
+                Err(Terminate::EnterWait)
+            },
+
+            (Opcode::Timeout, [..]) => {
+                todo!();
+            },
+
+            // receive markers enhance performance if implemented, but not required
+            (Opcode::RecvMarkerBind | Opcode::RecvMarkerClear
+            | Opcode::RecvMarkerReserve | Opcode::RecvMarkerUse, _) => Ok(()),
+
+            // ----===----
+            // term guards
+            // ----===----
+
+            (Opcode::IsTuple, [Some(Operand::Label(fail)), Some(val), ..]) => {
+                let val = self.state.get_operand(val)?;
+                let LocalTerm::Tuple(_) = val else { jump!(self, *fail) };
+                Ok(())
+            },
+
+            (Opcode::IsAtom, [Some(Operand::Label(fail)), Some(val), ..]) => {
+                let val = self.state.get_operand(val)?;
+                let LocalTerm::Atom(_) = val else { jump!(self, *fail) };
+                Ok(())
+            },
+
+            (Opcode::IsBitstr, [Some(Operand::Label(fail)), Some(val), ..]) => {
+                let val = self.state.get_operand(val)?;
+                let LocalTerm::BitString(_, _) = val else { jump!(self, *fail) };
+                Ok(())
+            },
+
+            (Opcode::IsBinary, [Some(Operand::Label(fail)), Some(val), ..]) => {
+                let val = self.state.get_operand(val)?;
+                let LocalTerm::BitString(len, _) = val else { jump!(self, *fail) };
+                if len % 8 != 0 { jump!(self, *fail) };
+                Ok(())
+            },
+
+            (Opcode::IsBoolean, [Some(Operand::Label(fail)), Some(val), ..]) => {
+                let val = self.state.get_operand(val)?;
+                let LocalTerm::Atom(atom) = val else { jump!(self, *fail) };
+                if atom != true_atom && atom != false_atom { jump!(self, *fail) };
+                Ok(())
+            },
+
+            (Opcode::IsInteger, [Some(Operand::Label(fail)), Some(val), ..]) => {
+                let val = self.state.get_operand(val)?;
+                let LocalTerm::Integer(_) = val else { jump!(self, *fail) };
+                Ok(())
+            },
+
+            (Opcode::IsPid, [Some(Operand::Label(fail)), Some(val), ..]) => {
+                let val = self.state.get_operand(val)?;
+                let LocalTerm::Pid(_) = val else { jump!(self, *fail) };
+                Ok(())
+            },
+
+            (Opcode::IsPort, [Some(Operand::Label(fail)), Some(val), ..]) => {
+                let val = self.state.get_operand(val)?;
+                let LocalTerm::Port(_) = val else { jump!(self, *fail) };
+                Ok(())
+            },
+
+            (Opcode::IsReference, [Some(Operand::Label(fail)), Some(val), ..]) => {
+                let val = self.state.get_operand(val)?;
+                let LocalTerm::Reference(_) = val else { jump!(self, *fail) };
+                Ok(())
+            },
+
+            (Opcode::IsList, [Some(Operand::Label(fail)), Some(val), ..]) => {
+                let val = self.state.get_operand(val)?;
+                let LocalTerm::List(_, _) = val else { jump!(self, *fail) };
+                Ok(())
+            },
+
+            (Opcode::IsNonemptyList, [Some(Operand::Label(fail)), Some(val), ..]) => {
+                let val = self.state.get_operand(val)?;
+                let LocalTerm::List(list, _) = val else { jump!(self, *fail) };
+                if list.len() == 0 { jump!(self, *fail) };
+                Ok(())
+            },
+
+            (Opcode::IsNil, [Some(Operand::Label(fail)), Some(val), ..]) => {
+                let val = self.state.get_operand(val)?;
+                let LocalTerm::List(list, _) = val else { jump!(self, *fail) };
+                if list.len() != 0 { jump!(self, *fail) };
+                Ok(())
+            },
+
+            // -----=====-----
+            // term operations
+            // -----=====-----
+
             (Opcode::IsEqExact, [Some(Operand::Label(fail)), Some(left), Some(right), ..]) => {
                 let left = self.state.get_operand(left)?;
                 let right = self.state.get_operand(right)?;
                 if left != right {
                     jump!(self, *fail);
                 }
-                Ok(())
-            },
-
-            (Opcode::IsTuple, [Some(Operand::Label(fail)), Some(val), ..]) => {
-                let val = self.state.get_operand(val)?;
-                let LocalTerm::Tuple(_) = val else { jump!(self, *fail) };
                 Ok(())
             },
 
@@ -290,29 +444,6 @@ impl BeamInterpreter {
                 Ok(())
             },
 
-            (Opcode::IsMap, [Some(Operand::Label(fail)), Some(arg), ..]) => {
-                let arg = self.state.get_operand(arg);
-                match arg {
-                    Ok(LocalTerm::Map(_)) => Ok(()),
-                    _ => jump!(self, *fail),
-                }
-            },
-            
-            (Opcode::GetMapElements, [Some(Operand::Label(fail)), Some(src), Some(Operand::List(spec)), ..]) => {
-                let src = self.state.get_operand(src)?;
-                if let LocalTerm::Map(src) = src {
-                    // `spec` is encoded as a sequence of KV pairs
-                    // the value corresponding to K is fetched and put into V
-                    let (chunks, []) = spec.as_chunks::<2>() else { bad_insn!() };
-                    for [left, right] in chunks {
-                        let left = self.state.get_operand(left)?;
-                        let Some(value) = src.0.get(&left) else { jump!(self, *fail) };
-                        self.state.assign_to_operand(right, value.clone())?;
-                    }
-                    Ok(())
-                } else { jump!(self, *fail) }
-            },
-
             (Opcode::IsTaggedTuple, [Some(Operand::Label(fail)), Some(src), Some(Operand::Number(arity)), Some(tag), ..]) => {
                 let src = self.state.get_operand(src)?;
                 let tag = self.state.get_operand(tag)?;
@@ -336,9 +467,32 @@ impl BeamInterpreter {
                 Ok(())
             },
 
-            // receive markers enhance performance if implemented, but not required
-            (Opcode::RecvMarkerBind | Opcode::RecvMarkerClear
-            | Opcode::RecvMarkerReserve | Opcode::RecvMarkerUse, _) => Ok(()),
+            // -==-
+            // maps
+            // -==-
+
+            (Opcode::IsMap, [Some(Operand::Label(fail)), Some(arg), ..]) => {
+                let arg = self.state.get_operand(arg);
+                match arg {
+                    Ok(LocalTerm::Map(_)) => Ok(()),
+                    _ => jump!(self, *fail),
+                }
+            },
+            
+            (Opcode::GetMapElements, [Some(Operand::Label(fail)), Some(src), Some(Operand::List(spec)), ..]) => {
+                let src = self.state.get_operand(src)?;
+                if let LocalTerm::Map(src) = src {
+                    // `spec` is encoded as a sequence of KV pairs
+                    // the value corresponding to K is fetched and put into V
+                    let (chunks, []) = spec.as_chunks::<2>() else { bad_insn!() };
+                    for [left, right] in chunks {
+                        let left = self.state.get_operand(left)?;
+                        let Some(value) = src.0.get(&left) else { jump!(self, *fail) };
+                        self.state.assign_to_operand(right, value.clone())?;
+                    }
+                    Ok(())
+                } else { jump!(self, *fail) }
+            },
 
             (_, _) => {
                 Err(Terminate::BadInsn)
@@ -399,13 +553,45 @@ impl Execute for BeamInterpreter {
                     return;
                 },
                 Err(Terminate::Badmatch) => {
+                    #[cfg(feature = "trace-beam")]
+                    {
+                        log::error!("badmatch exception");
+                        ip.log_context();
+                    }
                     self.common.status = ExecuteStatus::Exited;
                     return;
                 },
                 Err(Terminate::BadInsn) => {
                     #[cfg(feature = "trace-beam")]
                     {
-                        log::error!("invalid combination of opcode and operands or opcode not implemented:");
+                        log::error!("invalid combination of opcode and operands or opcode not implemented");
+                        ip.log_context();
+                    }
+                    self.common.status = ExecuteStatus::Exited;
+                    return;
+                },
+                Err(Terminate::NoApp) => {
+                    #[cfg(feature = "trace-beam")]
+                    {
+                        log::error!("application not found");
+                        ip.log_context();
+                    }
+                    self.common.status = ExecuteStatus::Exited;
+                    return;
+                },
+                Err(Terminate::NoMod) => {
+                    #[cfg(feature = "trace-beam")]
+                    {
+                        log::error!("module not found in application");
+                        ip.log_context();
+                    }
+                    self.common.status = ExecuteStatus::Exited;
+                    return;
+                },
+                Err(Terminate::NoFun) => {
+                    #[cfg(feature = "trace-beam")]
+                    {
+                        log::error!("function not found in module");
                         ip.log_context();
                     }
                     self.common.status = ExecuteStatus::Exited;
@@ -435,6 +621,7 @@ impl<'i> ExecuteMake<'i> for BeamInterpreter {
         Ok(Self {
             common,
             state: BeamState::new(InstructionPtr {
+                application: init.0.clone(),
                 module,
                 instruction: fun_instruction
             }, init.3),

@@ -15,22 +15,17 @@ main(Config, Ports) ->
     #{platform := 'x86_64-uefi'} = Config,
     #{log_port := LogPort} = Ports,
 
-    % acquire access token (this can only be done once)
-    % capability-based security from the ground up!
-    ConversationId = erlang:make_ref(),
-    LogPort ! {ConversationId, mint_token, [], []},
-    % notice how we don't sent our pid explicitly: the emulator does that for us
-    AccessToken = receive
-        {LogPort, {ConversationId, {ok, Token}}} -> Token
-    end,
+    % say hello world
+    {error, access} = gen_port:call(LogPort, {write, <<"Hello, World!">>}),
+    % uh-oh. we can't! we need an access token
 
-    % finally write hello world
-    % a new conversation id may be generated, but that's not required here
-    LogPort ! {ConversationId, write, AccessToken, [<<"Hello, World!">>]},
-    receive
-        {LogPort, {ConversationId, ok}} -> ok;
-        {LogPort, {ConversationId, {error, Err}}} ->
-            % welp!
-            % i dunno, let's raise a badmatch exception to crash the emulator
-            ok = {error, Err}
-    end.
+    % acquire the access token (this can only be done once)
+    % capability-based security from the ground up!
+    {ok, AccessToken} = gen_port:call(LogPort, mint_token),
+
+    % say hello world
+    ok = gen_port:call(LogPort, {write, <<"Hello, World!">>}, AccessToken),
+
+    % we can't get a new access token, we have to use the one we acquired
+    % earlier.
+    {error, access} = gen_port:call(LogPort, mint_token).

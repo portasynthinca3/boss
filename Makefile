@@ -29,7 +29,7 @@ emu:
 		build/emulator.efi
 
 # Erlang
-ERL_SOURCES=base/main.erl
+ERL_SOURCES=base/main.erl base/gen_port.erl
 ERLC_FLAGS=-b beam
 ERL_OUT=build/ebin
 ebin: $(ERL_SOURCES)
@@ -69,7 +69,7 @@ qemu-mon: esp
 		-d int \
 		-D qemu.log \
 		-accel tcg \
-		-serial stdio
+		-monitor stdio
 
 qemu-gdb: esp
 	qemu-system-x86_64 \

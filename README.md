@@ -107,7 +107,7 @@ Emulator:
     - [ ] SMP
   - [x] The BEAM world
     - [x] BEAM bytecode parsing
-    - [x] BEAM code execution
+    - [x] BEAM code execution (45/125 opcodes)
     - [x] Basic ports - MVP
     - [ ] Advanced ports
     - [ ] Performance enhancements
