@@ -136,8 +136,17 @@ I see that I'm not the only one fueled by bad decisions. Anyways, you will need:
   - Git
   - Rust v1.82-nightly
   - Make
-  - Erlang
+  - Erlang/OTP 27
   - QEMU
+  - OVMF (or other UEFI firmware for QEMU)
+
+These are the exact versions that this project has been tested and guaranteed to
+work with:
+```
+rustc 1.82.0-nightly (7120fdac7 2024-07-25)
+Erlang/OTP 27 [erts-15.0.1]
+QEMU emulator version 9.0.2
+```
 
 Run this project in QEMU with:
 ```shell
