@@ -241,11 +241,11 @@ unsafe impl Allocator for LinkedListAllocator {
             previous.next.as_mut().unwrap()
         } else {
             // last block is free but small: need to extend it
-            let target_size = pre_padding + layout.size() + post_padding;
+            let target_size = BlockHdr::layout().size() + pre_padding + layout.size() + post_padding;
             let increase_by = target_size - previous.size;
             let mut increase_by_pages = increase_by.div_ceil(PAGE_SIZE);
             #[cfg(feature = "trace-malloc")]
-            log::trace!("extending last block by {} pages to {}", increase_by_pages, ByteSize(target_size));
+            log::trace!("extending last block by {} pages from {} to {}", increase_by_pages, ByteSize(previous.size), ByteSize(target_size));
 
             // the physical allocator may be unable to handle all of them at once
             let mut v_addr = new_start;
