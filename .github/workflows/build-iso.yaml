@@ -1,0 +1,31 @@
+name: build-iso
+
+on:
+    push:
+        branches:
+          - master
+
+jobs:
+    build-iso:
+        runs-on: ubuntu-latest
+        steps:
+          - uses: actions/checkout@v4
+          - uses: actions-rs/toolchain@v1
+            with:
+                toolchain: nightly-2024-07-25
+                override: true
+                components: clippy, rust-src
+          - uses: erlef/setup-beam@v1
+            with:
+                otp-version: "27"
+          - run: cargo install just
+          - run: sudo apt install -y coreutils binutils mtools
+          - run: just iso
+          - uses: "marvinpinto/action-automatic-releases@latest"
+            with:
+                repo_token: "${{ secrets.GITHUB_TOKEN }}"
+                automatic_release_tag: "latest"
+                prerelease: true
+                title: "Commit Build"
+                files: |
+                    .build/boss.iso

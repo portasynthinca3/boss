@@ -7,7 +7,7 @@ build APP:
     mkdir -p .build/{{APP}}/ebin
     erlc {{erlc_flags}} -o .build/{{APP}}/ebin {{APP}}/src/*.erl
     ./etfify {{APP}}/src/{{APP}}.app.src .build/{{APP}}/ebin/app
-    cp -r {{APP}}/resources .build/{{APP}}/
+    # cp -r {{APP}}/resources .build/{{APP}}/
     tar cf .build/{{APP}}/{{APP}}.bop -C .build/{{APP}} ebin/
 
 create APP:

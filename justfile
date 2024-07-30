@@ -1,8 +1,9 @@
+default: iso
+
 clean:
     rm -rf target/x86_64-boss-uefi
     rm -rf .build
     rm -rf apps/.build
-    mkdir .build
 
 # Base image
 bosbaima:
@@ -23,6 +24,7 @@ emulator:
     cargo build {{cargo_flags}}
     cargo clippy {{cargo_flags}}
     # magic! (read mem_manager::reloc::relocate_pe for an explanation)
+    mkdir -p .build
     dd if=/dev/random of=.build/rand bs=1 count=1024 2> /dev/null
     dd if=/dev/zero of=.build/zero bs=1 count=14 2> /dev/null
     cat .build/rand .build/rand > .build/reloc-magic
