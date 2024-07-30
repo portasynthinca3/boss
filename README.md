@@ -132,7 +132,17 @@ Base image:
   - [ ] Other things
 
 ## I wanna run it!!!!
-I see that I'm not the only one fueled by bad decisions. Anyways, you will need:
+
+### Download
+You can download an ISO built from the latest commit over on the
+[Releases](https://github.com/portasynthinca3/boss/releases) page. However, I
+suggest that you instead build the OS from scratch.
+
+Currently, the OS does not display anything on the screen. Instead, refer to
+output from the serial port.
+
+### Build
+You will need:
   - Git
   - Just
   - MTools
@@ -158,15 +168,6 @@ $ make qemu
 
 Currently, the OS does not display anything on the screen. Instead, refer to
 serial output that's relayed to the terminal.
-
-### No, I wanna run it on bare hardware
-Please don't. Run `make` and make a FAT32 disk image from `boot/esp` yourself.
-Note, again, that the OS currently only outputs to the serial port, thus you
-won't be able to see anything on the screen.
-
-### I need an ISO
-The OS is not anywhere near the state where I'm comfortable with releasing a
-ready-to-run ISO to the general public.
 
 ## Credits
 A huge thank you to @thecaralice and @polina4096 for helping me understand Rust.
