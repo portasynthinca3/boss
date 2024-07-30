@@ -13,7 +13,7 @@ use super::{app::Application, scheduler::LocalTransferAgent, term::LocalTerm};
 pub struct LocalAtomRef(usize, Weak<str>);
 
 impl LocalAtomRef {
-    fn get_str(&self) -> Rc<str> {
+    pub fn get_str(&self) -> Rc<str> {
         self.1.upgrade().expect("inconsistent atom table state: string freed before weak reference was dropped")
     }
 }

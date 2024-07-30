@@ -1,0 +1,5 @@
+{application, APP,
+  [{description, "My glorious APP app"},
+   {vsn, "0.1"},
+   {modules, [main]},
+   {export_modules, [main]}]}.

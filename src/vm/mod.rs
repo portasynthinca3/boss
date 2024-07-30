@@ -3,18 +3,15 @@
 //! implement. Everything else around this module and its descendants is more or
 //! less just a generic microkernel.
 
-use alloc::{format, rc::Rc};
-
 use hashbrown::HashMap;
 
 use crate::util::tar::TarFile;
-use app::Application;
+use app::{Application, LoadError};
 use port::LogPort;
 use interpreter::{BeamInterpreter, BeamInterpreterMakeError};
-use module::{Module, LoadError};
 use scheduler::{PrimitiveScheduler, Schedule};
 use state::LocalContext;
-use term::{LocalTerm, MapTerm, TermError};
+use term::{LocalTerm, MapTerm};
 
 pub const CURRENT_OPCODE_MAX: usize = 178;
 
@@ -27,27 +24,18 @@ pub mod state;
 pub mod port;
 
 /// Virtual machine initialization error
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InitError {
-    /// No `ebin/base.app` file in base image
+    /// No base application package in base image
     NoBaseApp,
-    /// No `ebin/{module}.beam` file as requested by the app descriptor
-    NoBaseModule,
-    /// Bad data in `ebin/base.app`
-    BadSpec(TermError),
-    /// Bad data in `ebin/{module}.beam`
-    BadModule(LoadError),
+    /// Base application load error
+    BaseApp(LoadError),
     /// Interpreter initialization error
-    Interpreter(BeamInterpreterMakeError)
-}
-impl From<TermError> for InitError {
-    fn from(value: TermError) -> Self {
-        Self::BadSpec(value)
-    }
+    Interpreter(BeamInterpreterMakeError),
 }
 impl From<LoadError> for InitError {
     fn from(value: LoadError) -> Self {
-        Self::BadModule(value)
+        Self::BaseApp(value)
     }
 }
 impl From<BeamInterpreterMakeError> for InitError {
@@ -66,15 +54,10 @@ pub fn init(base_image: &TarFile) -> Result<!, InitError> {
     let x86_64_uefi_atom = context.atom_table.get_or_make_atom("x86_64-uefi");
     let main_atom = context.atom_table.get_or_make_atom("main");
 
-    // load base application and modules
-    let base_app = base_image.read_file("ebin/base.app").ok_or(InitError::NoBaseApp)?;
-    let mut base_app = Application::new(base_app, &mut context)?;
-    for (name, module) in base_app.modules.iter_mut() {
-        let path = format!("ebin/{name}.beam");
-        let module_data = base_image.read_file(path.as_str()).ok_or(InitError::NoBaseModule)?;
-        *module = Some(Rc::new(Module::new(module_data, &mut context)?));
-    }
-    context.applications.insert(base_atom.clone(), base_app);
+    // load base application package
+    let base_app = base_image.read_file("base.bop").ok_or(InitError::NoBaseApp)?;
+    let base_app = Application::from_bop_file(base_app, &mut context)?;
+    context.applications.insert(base_app.name.clone(), base_app);
 
     // create a scheduler and initial ports
     let mut scheduler = PrimitiveScheduler::new(context, 0);

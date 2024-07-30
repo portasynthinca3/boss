@@ -134,8 +134,9 @@ Base image:
 ## I wanna run it!!!!
 I see that I'm not the only one fueled by bad decisions. Anyways, you will need:
   - Git
+  - Just
+  - MTools
   - Rust v1.82-nightly
-  - Make
   - Erlang/OTP 27
   - QEMU
   - OVMF (or other UEFI firmware for QEMU)

@@ -3,11 +3,25 @@
 //! isolation of applications. This behavior is unwarranted and unexpected in
 //! traditional OTP code, and thus a compatibility mode is needed.
 
-use alloc::{rc::Rc, boxed::Box};
+use alloc::{boxed::Box, format, rc::Rc};
 
 use hashbrown::HashMap;
 
-use super::{module::Module, state::{LocalAtomRef, LocalContext}, term::{LocalTerm, TermError}};
+use super::{module::{self, Module}, state::{LocalAtomRef, LocalContext}, term::{LocalTerm, TermError}};
+use crate::util::tar::TarFile;
+
+/// Application package load error
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum LoadError {
+    /// No app metadata file in app package
+    NoSpec,
+    /// Invalid app metadata file in app package
+    BadSpec(TermError),
+    /// No module in app package
+    NoModule(LocalAtomRef),
+    /// Invalid module data in app package
+    BadModule(LocalAtomRef, module::LoadError),
+}
 
 /// Named collection of related modules
 /// 
@@ -27,7 +41,7 @@ pub struct Application {
 
 impl Application {
     /// Parses a binary `.app` specification
-    pub fn new(data: &[u8], context: &mut LocalContext) -> Result<Application, TermError> {
+    pub fn from_app_file(data: &[u8], context: &mut LocalContext) -> Result<Application, TermError> {
         // parse ETF
         let term = match LocalTerm::from_etf(data, context) {
             Ok(term) => term,
@@ -47,5 +61,21 @@ impl Application {
         }
 
         Ok(Application { name, version, modules })
+    }
+
+    /// Parses a BOSS package (`.bop`) application file
+    pub fn from_bop_file(data: &[u8], context: &mut LocalContext) -> Result<Application, LoadError> {
+        let package = TarFile::new(data);
+        let spec = package.read_file("ebin/app").ok_or(LoadError::NoSpec)?;
+        let mut app = Self::from_app_file(spec, context).map_err(LoadError::BadSpec)?;
+
+        for (name, module) in app.modules.iter_mut() {
+            let name_str = name.get_str();
+            let path = format!("ebin/{name_str}.beam");
+            let data = package.read_file(path.as_str()).ok_or(LoadError::NoModule(name.clone()))?;
+            *module = Some(Module::new(data, context).map_err(|e| LoadError::BadModule(name.clone(), e))?.into());
+        }
+
+        Ok(app)
     }
 }
