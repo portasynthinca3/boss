@@ -163,7 +163,7 @@ Run this project in QEMU with:
 ```shell
 $ git clone https://github.com/portasynthinca3/boss
 $ cd boss
-$ make qemu
+$ just qemu
 ```
 
 Currently, the OS does not display anything on the screen. Instead, refer to

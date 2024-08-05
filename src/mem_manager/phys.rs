@@ -387,3 +387,18 @@ pub fn relocate() {
 
     (*guard).relocate();
 }
+
+/// Returns a tuple containing used and available physical memory.
+pub fn stats() -> (ByteSize, ByteSize) {
+    let mut used = ByteSize(0);
+    let mut available = ByteSize(0);
+
+    for range in (*ALL_RANGES.read()).as_ref().unwrap().iter() {
+        available += ByteSize(range.pages * PAGE_SIZE);
+        for b in range.bitmap.as_ref() {
+            used += ByteSize(b.count_ones() as usize * PAGE_SIZE);
+        }
+    }
+
+    (used, available)
+}
