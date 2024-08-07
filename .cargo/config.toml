@@ -5,11 +5,18 @@ debug = true
 incremental = false
 opt-level = 0
 rustflags = [
-    "-Cembed-bitcode=no",
-    "-Crelocation-model=pie",
-    "-Cdebuginfo=2",
-    "-Zmacro-backtrace",
+  "-Cembed-bitcode=no",
+  "-Crelocation-model=pie",
+  "-Cdebuginfo=2",
+  "-Zmacro-backtrace",
 ]
 
 [profile.release.build-override]
-opt-level=3
+opt-level = 3
+
+[unstable]
+build-std-features = ["compiler-builtins-mem"]
+build-std = ["core", "compiler_builtins", "alloc"]
+
+[build]
+target = "x86_64-boss-uefi.json"
