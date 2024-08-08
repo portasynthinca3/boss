@@ -16,7 +16,7 @@ bosbaima:
 profile := "release"        # "dev" or "release"
 profile_dir := "release"    # "debug" or "release"
 features := ","
-cargo_flags := "--target x86_64-boss-uefi.json -Zbuild-std=core,compiler_builtins,alloc -Zbuild-std-features=compiler-builtins-mem --profile " + profile + " --features " + features
+cargo_flags := "--profile " + profile + " --features " + features
 magic_section_offset := "0x141000000"
 reloc_section_offset := "0x141001000"
 # EFI executable
