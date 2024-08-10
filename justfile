@@ -26,7 +26,7 @@ emulator:
     # magic! (read mem_manager::reloc::relocate_pe for an explanation)
     mkdir -p .build
     dd if=/dev/random of=.build/rand bs=1 count=1024 2> /dev/null
-    dd if=/dev/zero of=.build/zero bs=1 count=14 2> /dev/null
+    dd if=/dev/zero of=.build/zero bs=1 count=1 2> /dev/null
     cat .build/rand .build/rand > .build/reloc-magic
     objdump -hj.data target/x86_64-boss-uefi/{{profile_dir}}/boss.efi | tail -n+6 | head -n1 >> .build/reloc-magic
     cat .build/zero >> .build/reloc-magic

@@ -132,42 +132,65 @@ Base image:
   - [ ] Other things
 
 ## I wanna run it!!!!
+Currently, the OS does not display anything on the screen. Instead, refer to
+output from the serial port. [Nix](#build-using-nix) and
+[Just](#build-using-just) scripts instruct QEMU to redirect serial port output
+to the terminal.
 
 ### Download
 You can download an ISO built from the latest commit over on the
 [Releases](https://github.com/portasynthinca3/boss/releases) page. However, I
 suggest that you instead build the OS from scratch.
 
-Currently, the OS does not display anything on the screen. Instead, refer to
-output from the serial port.
+### Build using Nix
+Clone the project with:
+```shell
+$ git clone https://github.com/portasynthinca3/boss.git
+$ cd boss
+```
 
-### Build
-You will need:
-  - Git
-  - Just
-  - MTools
-  - Rust v1.82-nightly
-  - Erlang/OTP 27
+Build an ISO with:
+```shell
+$ nix --extra-experimental-features flakes build .#iso
+```
+
+Launch in QEMU with:
+```shell
+$ nix --extra-experimental-features flakes --extra-experimental-features nix-command run
+```
+
+### Build using Just
+Clone the project with:
+```shell
+$ git clone https://github.com/portasynthinca3/boss.git
+$ cd boss
+```
+
+To build an ISO, you will need:
+  - Just v1.x (tested with `1.33.0`)
+  - GNU MTools v4.x (tested with `4.0.44`)
+  - GNU binutils v2.x (tested with `2.42.0`)
+  - Rust v1.82-nightly (tested with `1.82.0-nightly (7120fdac7 2024-07-25)`)
+  - Erlang/OTP 27 (tested with `Erlang/OTP 27 [erts-15.0.1]`, 26 and below will
+    _not_ work)
+
+Build an ISO with:
+```shell
+$ just iso
+```
+
+To run the ISO in QEMU, you will need:
+  - All the other things needed for building an ISO
   - QEMU
   - OVMF (or other UEFI firmware for QEMU)
 
-These are the exact versions that this project has been tested and guaranteed to
-work with:
-```
-rustc 1.82.0-nightly (7120fdac7 2024-07-25)
-Erlang/OTP 27 [erts-15.0.1]
-QEMU emulator version 9.0.2
-```
-
-Run this project in QEMU with:
+Launch QEMU with:
 ```shell
-$ git clone https://github.com/portasynthinca3/boss
-$ cd boss
 $ just qemu
 ```
 
-Currently, the OS does not display anything on the screen. Instead, refer to
-serial output that's relayed to the terminal.
-
 ## Credits
-A huge thank you to @thecaralice and @polina4096 for helping me understand Rust.
+Thank you to:
+  - [@thecaralice](https://github.com/thecaralice) for helping me understand
+    Rust and adding a Nix flake
+  - [@polina4096](https://github.com/polina4096) for helping me understand Rust
