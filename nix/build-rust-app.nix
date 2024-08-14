@@ -12,11 +12,11 @@ let
     {
       inherit src;
       inherit doCheck;
-      env.CARGO_BUILD_TARGET = lib.mapNullable toString target;
       passthru = {
         inherit craneLib;
       };
     }
+    // lib.optionalAttrs (target != null) { env.CARGO_BUILD_TARGET = "${target}"; }
     // lib.optionalAttrs fixBuildStd {
       # https://github.com/ipetkov/crane/issues/285
       cargoVendorDir = craneLib.vendorMultipleCargoDeps {
