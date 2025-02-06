@@ -248,7 +248,7 @@ impl BeamInterpreter {
                     for (i, elem) in self.state.y.iter().enumerate() {
                         log::error!("{i}: {elem:?}");
                     }
-                    panic!("corrupted BEAM stack frame");
+                    panic!("corrupted BEAM stack frame"); // TODO: maybe do not crash the entire system
                 };
                 let old_stop = self.state.stop;
                 self.state.cp.clone_from(cp);

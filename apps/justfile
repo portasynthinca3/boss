@@ -1,4 +1,5 @@
-erlc_flags := "-b beam"
+erlc_flags := "-b beam -Wall -DNOTEST"
+erlc_flags_tests := "-b beam -Wall -DTEST"
 
 clean APP:
     rm -rf .build/{{APP}}
@@ -9,6 +10,11 @@ build APP:
     ./etfify {{APP}}/src/{{APP}}.app.src .build/{{APP}}/ebin/app
     # cp -r {{APP}}/resources .build/{{APP}}/
     tar cf .build/{{APP}}/{{APP}}.bop -C .build/{{APP}} ebin/
+
+test APP:
+    mkdir -p .build/{{APP}}/ebin_tests
+    erlc {{erlc_flags_tests}} -o .build/{{APP}}/ebin_tests {{APP}}/src/*.erl
+    erl -noshell -pz .build/{{APP}}/ebin_tests -s tests_runner run_tests -s init stop
 
 create APP:
     mkdir -p {{APP}}/{resources,src}

@@ -35,7 +35,7 @@ pub enum ExecuteStatus {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct Eid(pub usize, pub usize);
 
-/// State common shared between all executables
+/// State shared between all executables
 pub struct CommonState {
     pub id: Eid,
     pub status: ExecuteStatus,

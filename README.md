@@ -194,3 +194,5 @@ Thank you to:
   - [@thecaralice](https://github.com/thecaralice) for helping me understand
     Rust and adding a Nix flake
   - [@polina4096](https://github.com/polina4096) for helping me understand Rust
+  - [@shdown](https://github.com/shdown) for helping with the algorithm for the
+    `gen_perm:subset/2` function (`apps/base/src/gen_perm.erl`)

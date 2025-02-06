@@ -255,6 +255,7 @@ pub fn init(mem_map: &MemoryMap) {
 
         // skip ranges starting at address zero
         // (i know, i know :c)
+        // TODO: only skip first page
         if entry.phys_start == 0 { continue; }
         
         // check whether the range is usable

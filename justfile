@@ -15,7 +15,7 @@ bosbaima:
 
 profile := "release"        # "dev" or "release"
 profile_dir := "release"    # "debug" or "release"
-features := ","
+features := "log-trace,"
 cargo_flags := "--profile " + profile + " --features " + features
 magic_section_offset := "0x141000000"
 reloc_section_offset := "0x141001000"
@@ -51,7 +51,7 @@ iso: emulator bosbaima
 # Boot 
 qemu: iso
     qemu-system-x86_64 -enable-kvm \
-        -drive if=pflash,format=raw,readonly=on,file=/usr/share/ovmf/x64/OVMF.fd \
+        -drive if=pflash,format=raw,readonly=on,file=/usr/share/ovmf/x64/OVMF.4m.fd \
         -device ahci,id=ahci \
         -device ide-hd,drive=disk,bus=ahci.0 \
         -drive if=none,id=disk,format=raw,file=.build/boss.iso \

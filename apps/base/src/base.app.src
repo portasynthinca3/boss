@@ -1,5 +1,5 @@
 {application, base,
   [{description, "Modules needed to bootstrap a functional BOSS system"},
    {vsn, "0.1"},
-   {modules, [gen_port, main]},
-   {export_modules, [gen_port]}]}.
+   {modules, [gen_port, gen_perm, gen_server, main]},
+   {export_modules, [gen_port, gen_perm, gen_server]}]}.

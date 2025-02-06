@@ -84,7 +84,7 @@ fn main(image_handle: Handle, system_table: SystemTable<Boot>) -> Status {
     let (_sys_table, mut mem_map) = system_table.exit_boot_services(MemoryType::LOADER_DATA);
     checkpoint::advance(Checkpoint::BootServicesExited).unwrap();
     mem_map.sort();
-    
+
     // init memory management
     phys::init(&mem_map);
     let mut addr_space = reloc::make_dual_map(&mem_map);
