@@ -36,7 +36,7 @@
 //!   - Public: [`Manager`] exposes a somewhat safe and nice-to-use abstraction.
 
 use core::mem::size_of;
-use core::arch::asm;
+use core::arch::{asm, naked_asm};
 
 use strum::VariantArray;
 use bitfield_struct::bitfield;
@@ -284,10 +284,10 @@ extern "sysv64" fn _intr_common_handler(state_ptr: *mut ExecutionState) {
 /// Called by one of the trampolines. Saves the not-yet-saved registers and
 /// calls [`_intr_common_handler`] with a pointer to the cumulative state
 /// structure.
-#[naked]
+#[unsafe(naked)]
 #[no_mangle]
 unsafe extern "C" fn _intr_reg_wrapper() -> ! {
-    asm!(
+    naked_asm!(
         // save registers
         // note: rax saved by trampoline
         "push rbx",
@@ -327,7 +327,6 @@ unsafe extern "C" fn _intr_reg_wrapper() -> ! {
         "add rsp, 8", // error code
         // return from interrupt
         "iretq",
-        options(noreturn)
     );
 }
 
@@ -337,9 +336,9 @@ unsafe extern "C" fn _intr_reg_wrapper() -> ! {
 /// 
 /// This handler just prints "\n#DF" to the serial port without using memory and
 /// loops forever.
-#[naked]
+#[unsafe(naked)]
 unsafe extern "C" fn double_fault_isr() -> ! {
-    asm!(
+    naked_asm!(
         "mov dx, 0x3f8",
         "mov al, '\n'", "out dx, al",
         "mov al, '#'",  "out dx, al",
@@ -347,7 +346,6 @@ unsafe extern "C" fn double_fault_isr() -> ! {
         "mov al, 'F'",  "out dx, al",
         "2:",
         "jmp 2b",
-        options(noreturn)
     );
 }
 
