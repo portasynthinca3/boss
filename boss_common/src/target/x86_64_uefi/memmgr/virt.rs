@@ -357,8 +357,7 @@ impl<'s> RawTable<'s> {
     /// cannot have children or if the entry is not present.
     unsafe fn get_downstream_by_idx(&self, idx: usize) -> Option<RawTable<'s>> {
         // check entry presence
-        let Some(entries) = self.entries?;
-        let entry: TableEntry = (*entries)[idx];
+        let entry: TableEntry = (*self.entries?)[idx];
         if !entry.present() { return None; }
         let ds_kind = self.kind.downstream()?; // this also ensures that we can have children
 

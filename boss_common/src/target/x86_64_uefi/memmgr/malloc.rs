@@ -217,7 +217,7 @@ unsafe impl Allocator for LinkedListAllocator {
                     page_cnt -= 1;
                     v_addr = VirtAddr(v_addr.0 + PAGE_SIZE);
                 }
-                if pages.is_empty() == 0 {
+                if pages.is_empty() {
                     #[cfg(feature = "trace-malloc")]
                     log::trace!("allocate({layout:?}) = no memory!");
                     return Err(AllocError)
