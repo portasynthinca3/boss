@@ -12,7 +12,7 @@ jobs:
           - uses: actions/checkout@v4
           - uses: actions-rs/toolchain@v1
             with:
-                toolchain: nightly-2024-07-25
+                toolchain: nightly-2025-05-25
                 override: true
                 components: clippy, rust-src
           - uses: erlef/setup-beam@v1
