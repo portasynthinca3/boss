@@ -1,0 +1,26 @@
+[package]
+name = "boss_common"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bitfield-struct = "0.5.6"
+bitflags = "2.9.0"
+derive_more = "0.99.17"
+log = { workspace = true }
+num_enum = { version = "0.7.2", default-features = false }
+spin = "0.9.8"
+strum = { version = "0.26", default-features = false }
+strum_macros = { version = "0.26", default-features = false }
+uefi = { workspace = true }
+
+[features]
+# Traces allocation and deallocation of pages by the physical memory manager
+trace-pmm = []
+# Traces heap allocations and deallocations
+trace-malloc = []
+# Traces video module
+trace-hal-video = []
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(boss_target, values("x86_64-uefi"))'] }

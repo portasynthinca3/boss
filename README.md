@@ -10,7 +10,7 @@ system written in Erlang together with Rust. Its distinctive features include:
 ## Goals
   - learn Rust;
   - implement an Erlang VM;
-  - implement the dumbest fucking idea that came to my head at 3 in the morning.
+  - implement the dumbest idea that came to my head at 3 in the morning.
 
 This project strives to achieve the following, in order of decreasing
 importance:
@@ -28,7 +28,7 @@ implementation is not. Like, not at all. But it works and it's a starting point!
 
 ## Structure
 
-### Emulator
+### Emulator (`boss_emu` crate)
 The basis of this project is the **emulator**, a multiprocessing-aware Erlang VM
 that runs on bare hardware. It only implements the bare minimum it has to
 implement in order to reach this objective; for example, it does parse some ACPI
@@ -70,7 +70,7 @@ the BEAM. Here's an incomplete list of the differences:
     Self = self(),
     Self ! hello,
     receive
-      {Self, hello} -> yay,
+      {Self, hello} -> yay;
       hello -> nay
     end.
     ```
@@ -81,6 +81,14 @@ the BEAM. Here's an incomplete list of the differences:
 
 The current implementation is not the fastest, but it's a starting point to get
 things working.
+
+### Common (`boss_common` crate)
+Contains Hardware Abstraction Layers for platforms and various utilities. Both
+the emulator and the bootloader depend on this crate to do their jobs.
+
+### Bootloader (`boss_boot` crate)
+Initializes memory management, decompresses embedded images and executes the
+emulator.
 
 ### Base image
 On startup, the emulator loads the **BOSS base image** (`BOSBAIMA.TAR`) that
@@ -98,7 +106,6 @@ Emulator:
     - [x] Logging
     - [x] Physical memory management
     - [x] Virtual memory management
-    - [x] Relocation
     - [x] Interrupt handling
     - [x] Heap - MVP
     - [ ] Memory caching support
@@ -190,9 +197,9 @@ $ just qemu
 ```
 
 ## Credits
-Thank you to:
-  - [@thecaralice](https://github.com/thecaralice) for helping me understand
-    Rust and adding a Nix flake
+Thank you to (in no specific order):
+  - [@magistau](https://github.com/magistau) for helping me understand Rust and
+    adding a Nix flake (which I unfortunately had subsequently removed)
   - [@polina4096](https://github.com/polina4096) for helping me understand Rust
   - [@shdown](https://github.com/shdown) for helping with the algorithm for the
     `gen_perm:subset/2` function (`apps/base/src/gen_perm.erl`)

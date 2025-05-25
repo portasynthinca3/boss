@@ -1,0 +1,90 @@
+#![no_main]
+#![no_std]
+#![feature(
+    naked_functions,
+    allocator_api,
+    let_chains,
+    if_let_guard,
+    ptr_as_uninit,
+    slice_ptr_get,
+    alloc_layout_extra,
+    generic_arg_infer,
+    generic_const_exprs,
+    never_type,
+    slice_as_chunks,
+)]
+#![allow(incomplete_features)]
+
+extern crate alloc;
+
+pub mod vm;
+
+use core::{arch::asm, panic::PanicInfo};
+
+use boss_common::{
+    target::{
+        glue::Glue,
+        interrupt,
+        memmgr::{
+            layout, malloc, phys, virt::AddressSpace, VirtAddr
+        },
+        runtime_cfg::{self, CfgFlags},
+    },
+    util::{serial_logger::SerialLogger, tar::TarFile},
+};
+
+// use mem_manager::*;
+// mod checkpoint;
+// mod bosbaima;
+// mod interrupt;
+// mod segment;
+// mod vm;
+
+#[cfg(not(test))]
+#[panic_handler]
+fn panic_handler(info: &PanicInfo) -> ! {
+    log::error!("EMULATOR PANIC at {}:", info.location().unwrap().clone());
+    log::error!("{}", info.message());
+    log::error!("runtime_cfg: {:?}", runtime_cfg::get());
+    loop {
+        unsafe { asm!("hlt"); }
+    }
+}
+
+static mut LOGGER: Option<SerialLogger> = None;
+
+/// Entry point. Performs initialization of all the components
+#[no_mangle]
+extern "C" fn _start(glue: &Glue) -> ! {
+    // init serial logger
+    unsafe {
+        // SAFETY: this static var is initialized and subsequently borrowed
+        // exactly once
+        LOGGER = Some(SerialLogger::new(0));
+        log::set_logger(LOGGER.as_ref().unwrap()).unwrap();
+    }
+    #[cfg(feature = "log-trace")]
+    log::set_max_level(log::LevelFilter::Trace);
+    #[cfg(not(feature = "log-trace"))]
+    log::set_max_level(log::LevelFilter::Info);
+
+    log::info!("boss_emu started");
+    runtime_cfg::set_flags(CfgFlags::ExecutingInUpperHalf, true);
+
+    // initialize memory management
+    unsafe { phys::import(glue.pmm_state) };
+    let mut addr_space = unsafe { AddressSpace::get_current() };
+
+    // initialize interrupts
+    let (interrupt_mgr, _segments) = interrupt::Manager::new(&mut addr_space);
+    unsafe { interrupt_mgr.set_as_current(); }
+
+    addr_space.modify().unmap_range(VirtAddr::from_usize(0)..=layout::NIF_TOP).unwrap();
+
+    // initialize global allocator
+    unsafe { malloc::initialize_default(addr_space) };
+
+    // start the VM
+    let base_image = TarFile::new(glue.data_image);
+    vm::init(&base_image).unwrap()
+}

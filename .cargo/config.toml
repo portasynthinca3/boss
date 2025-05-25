@@ -1,5 +1,6 @@
 [profile.dev]
 debug = true
+panic = "abort"
 
 [profile.dev.build-override]
 incremental = false
@@ -17,6 +18,3 @@ opt-level = 3
 [unstable]
 build-std-features = ["compiler-builtins-mem"]
 build-std = ["core", "compiler_builtins", "alloc"]
-
-[build]
-target = "x86_64-boss-uefi.json"

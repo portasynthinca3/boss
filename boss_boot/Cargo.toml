@@ -1,0 +1,16 @@
+[package]
+name = "boss_boot"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+boss_common = { path = "../boss_common" }
+log = { workspace = true }
+miniz_oxide = { version = "0.7.4", default-features = false }
+uefi = { workspace = true }
+
+[features]
+log-trace = []
+trace-pmm = ["boss_common/trace-pmm"]
+trace-malloc = ["boss_common/trace-malloc"]
+trace-hal-video = ["boss_common/trace-hal-video"]
