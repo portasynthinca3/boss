@@ -14,7 +14,7 @@ use boss_common::{
         },
         runtime_cfg,
         glue::Glue,
-        hal::video::Video,
+        hal::{video::Video, wall_clock},
     },
     util::{byte_size::ByteSize, elf::{ElfFile, ElfLoadedProgramInfo}, serial_logger::SerialLogger},
 };
@@ -170,6 +170,7 @@ fn run_executable(info: &ElfLoadedProgramInfo, stack_top: VirtAddr, glue: *const
 /// Bootloader entry point
 #[cfg_attr(not(test), entry)]
 fn main(image_handle: Handle, system_table: SystemTable<Boot>) -> Status {
+    wall_clock::calibrate();
     // init serial logger
     unsafe {
         // SAFETY: this static var is initialized and subsequently borrowed

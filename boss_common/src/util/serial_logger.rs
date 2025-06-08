@@ -1,7 +1,7 @@
 use core::fmt::Write;
 use log::{Record, Level, Metadata};
 use spin::Mutex;
-use crate::target::hal::serial::SerialPort;
+use crate::target::hal::{serial::SerialPort, wall_clock::get_us_since_boot};
 
 pub struct SerialLogger {
     port: Mutex<SerialPort>,
@@ -33,6 +33,9 @@ impl log::Log for SerialLogger {
     fn log(&self, record: &Record) {
         if self.enabled(record.metadata()) {
             // gather arguments
+            let time = get_us_since_boot(true);
+            let sec = time / 1_000_000;
+            let usec = time % 1_000_000;
             let level = Self::get_level_string(record.level());
             let args = record.args();
             let module = record.module_path();
@@ -44,11 +47,11 @@ impl log::Log for SerialLogger {
             let mut guard = self.port.lock();
             match (module, line) {
                 (Some(module), Some(line)) =>
-                    guard.write_fmt(format_args!("[{level} {mod_color}{module}:{line}{reset}] {args}\r\n")),
+                    guard.write_fmt(format_args!("[{sec}.{usec:06} {level} {mod_color}{module}:{line}{reset}] {args}\r\n")),
                 (Some(module), None) =>
-                    guard.write_fmt(format_args!("[{level} {mod_color}{module}{reset}] {args}\r\n")),
+                    guard.write_fmt(format_args!("[{sec}.{usec:06} {level} {mod_color}{module}{reset}] {args}\r\n")),
                 _ =>
-                    guard.write_fmt(format_args!("[{level}{reset}] {args}\r\n")),
+                    guard.write_fmt(format_args!("[{sec}.{usec:06} {level}{reset}] {args}\r\n")),
             }.unwrap();
         }
     }

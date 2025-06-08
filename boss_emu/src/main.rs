@@ -29,16 +29,10 @@ use boss_common::{
             layout, malloc, phys, virt::AddressSpace, VirtAddr
         },
         runtime_cfg::{self, CfgFlags},
+        hal::wall_clock
     },
     util::{serial_logger::SerialLogger, tar::TarFile},
 };
-
-// use mem_manager::*;
-// mod checkpoint;
-// mod bosbaima;
-// mod interrupt;
-// mod segment;
-// mod vm;
 
 #[cfg(not(test))]
 #[panic_handler]
@@ -56,6 +50,7 @@ static mut LOGGER: Option<SerialLogger> = None;
 /// Entry point. Performs initialization of all the components
 #[no_mangle]
 extern "C" fn _start(glue: &Glue) -> ! {
+    wall_clock::calibrate();
     // init serial logger
     unsafe {
         // SAFETY: this static var is initialized and subsequently borrowed
