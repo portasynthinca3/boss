@@ -168,6 +168,11 @@ impl From<VirtAddr> for usize {
         value.0
     }
 }
+impl<T> From<VirtAddr> for *const T {
+    fn from(value: VirtAddr) -> Self {
+        value.0 as *const T
+    }
+}
 impl<T> From<VirtAddr> for *mut T {
     fn from(value: VirtAddr) -> Self {
         value.0 as *mut T

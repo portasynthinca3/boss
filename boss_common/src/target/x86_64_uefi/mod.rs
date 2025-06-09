@@ -5,3 +5,4 @@ pub mod runtime_cfg;
 pub mod glue;
 pub mod segment;
 pub mod interrupt;
+pub mod acpi;

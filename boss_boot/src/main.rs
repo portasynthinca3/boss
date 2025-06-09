@@ -4,7 +4,7 @@
 use core::{arch::asm, panic::PanicInfo, slice};
 use miniz_oxide::inflate::{self, TINFLStatus, core::inflate_flags::*};
 use uefi::{
-    prelude::*, table::boot::{MemoryMap, MemoryType},
+    prelude::*, table::{boot::{MemoryMap, MemoryType}, cfg::ACPI2_GUID},
 };
 
 use boss_common::{
@@ -185,11 +185,20 @@ fn main(image_handle: Handle, system_table: SystemTable<Boot>) -> Status {
 
     log::info!("boss_boot started");
 
+    let acpi_xsdp: VirtAddr = system_table
+        .config_table()
+        .iter()
+        .find(|entry| entry.guid == ACPI2_GUID)
+        .unwrap()
+        .address
+        .into();
+    let acpi_xsdp: PhysAddr = acpi_xsdp.into();
+
     // video has to be initialized before exiting boot services
     let video = Video::new(&system_table);
 
     // initialize physical memory manager
-    let (system_table, mem_map) = system_table.exit_boot_services(MemoryType::LOADER_DATA);
+    let (_system_table, mem_map) = system_table.exit_boot_services(MemoryType::LOADER_DATA);
     phys::init(&mem_map);
 
     // create new address space with the same mapping
@@ -233,7 +242,7 @@ fn main(image_handle: Handle, system_table: SystemTable<Boot>) -> Status {
 
     // compose parameters to pass to executable
     let glue = Glue {
-        system_table,
+        acpi_xsdp,
         pmm_state: phys::export(),
         video,
         data_image,

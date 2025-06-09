@@ -1,17 +1,10 @@
 #![no_main]
 #![no_std]
 #![feature(
-    naked_functions,
-    allocator_api,
-    let_chains,
-    if_let_guard,
-    ptr_as_uninit,
-    slice_ptr_get,
-    alloc_layout_extra,
-    generic_arg_infer,
-    generic_const_exprs,
     never_type,
-    slice_as_chunks,
+    if_let_guard,
+    generic_const_exprs,
+    let_chains,
 )]
 #![allow(incomplete_features)]
 
@@ -29,7 +22,8 @@ use boss_common::{
             layout, malloc, phys, virt::AddressSpace, VirtAddr
         },
         runtime_cfg::{self, CfgFlags},
-        hal::wall_clock
+        hal::wall_clock,
+        acpi,
     },
     util::{serial_logger::SerialLogger, tar::TarFile},
 };
@@ -78,6 +72,9 @@ extern "C" fn _start(glue: &Glue) -> ! {
 
     // initialize global allocator
     unsafe { malloc::initialize_default(addr_space) };
+
+    // initialize ACPI
+    unsafe { acpi::init(glue.acpi_xsdp) };
 
     // start the VM
     let base_image = TarFile::new(glue.data_image);

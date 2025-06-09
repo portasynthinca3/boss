@@ -10,11 +10,13 @@ system written in Erlang together with Rust. Its distinctive features include:
 ## Goals
   - learn Rust;
   - implement an Erlang VM;
-  - implement the dumbest idea that came to my head at 3 in the morning.
+  - implement the dumbest idea that came to my head at 3 in the morning;
+  - have fun.
 
 This project strives to achieve the following, in order of decreasing
 importance:
-  - get the implementation working;
+  - have fun;
+  - get the implementation to work;
   - make the implementation correct;
   - make the implementation fast.
 
@@ -23,7 +25,7 @@ Yes. Erlang is a very cool functional (at a low level) / object-oriented (at a
 high level) concurrent language. Erlang makes it easy to write code that scales
 almost effortlessly across multiple cores, processors or even machines. Existing
 implementations of Erlang (most notably, the official BEAM virtual machine) are
-very performant in both single-core and multi-core operations. This
+very performant in both sequential and concurrent operations. This
 implementation is not. Like, not at all. But it works and it's a starting point!
 
 ## Structure
@@ -109,7 +111,7 @@ Emulator:
     - [x] Interrupt handling
     - [x] Heap - MVP
     - [ ] Memory caching support
-    - [ ] Basic ACPI parser
+    - [x] Basic ACPI parser
     - [ ] APIC driver
     - [ ] SMP
   - [x] The BEAM world
@@ -203,3 +205,5 @@ Thank you to (in no specific order):
   - [@polina4096](https://github.com/polina4096) for helping me understand Rust
   - [@shdown](https://github.com/shdown) for helping with the algorithm for the
     `gen_perm:subset/2` function (`apps/base/src/gen_perm.erl`)
+  - [The BEAM Book](https://github.com/happi/theBeamBook) for documenting the
+    original BEAM virtual machine
