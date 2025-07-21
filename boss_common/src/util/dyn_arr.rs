@@ -95,7 +95,7 @@ impl<Elem: DynArrElem> Debug for DynArr<Elem> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "DynArr<{}> {{", core::any::type_name::<Elem>())?;
         for (i, elem) in self.iter().enumerate() {
-            write!(f, "{:?}", elem)?;
+            write!(f, "{elem:?}")?;
             if i != self.count - 1 {
                 write!(f, ", ")?;
             }

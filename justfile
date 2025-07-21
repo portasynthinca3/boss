@@ -88,7 +88,7 @@ qemu: iso
         -device ide-hd,drive=disk,bus=ahci.0 \
         -drive if=none,id=disk,format=raw,file=.build/boss.iso \
         -m 128 \
-        -smp 1,sockets=1,cores=1,threads=1 \
+        -smp 4,sockets=1,cores=2,threads=2 \
         -boot menu=off,splash-time=0 \
         -d int \
         -D qemu.log \

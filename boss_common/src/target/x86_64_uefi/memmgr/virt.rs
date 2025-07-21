@@ -668,8 +668,7 @@ impl Debug for AddressSpace {
             last_addr = Some(addr);
         });
 
-        if start_addr.is_some() {
-            let (start_virt, start_phys) = start_addr.unwrap();
+        if let Some((start_virt, start_phys)) = start_addr {
             let pages = ((last_addr.unwrap().0 - start_virt.0) / PAGE_SIZE) + 1;
             writeln!(f, "\t{:?}..{:?} -> {:?}..{:?}",
                 start_virt, VirtAddr::from_usize(start_virt.0 + (pages * PAGE_SIZE)),

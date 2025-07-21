@@ -43,10 +43,7 @@ impl Application {
     /// Parses a binary `.app` specification
     pub fn from_app_file(data: &[u8], context: &mut LocalContext) -> Result<Application, TermError> {
         // parse ETF
-        let term = match LocalTerm::from_etf(data, context) {
-            Ok(term) => term,
-            Err(e) => return Err(e),
-        };
+        let term = LocalTerm::from_etf(data, context)?;
 
         // deconstruct term
         let [name, properties] = term.get_tagged_tuple("application", context)?;

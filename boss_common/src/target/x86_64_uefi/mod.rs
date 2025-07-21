@@ -6,3 +6,4 @@ pub mod glue;
 pub mod segment;
 pub mod interrupt;
 pub mod acpi;
+pub mod apic;

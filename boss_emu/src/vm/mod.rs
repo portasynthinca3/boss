@@ -5,7 +5,7 @@
 
 use hashbrown::HashMap;
 
-use boss_common::util::tar::TarFile;
+use boss_common::util::{tar::TarFile, boot_stage};
 use app::{Application, LoadError};
 use port::LogPort;
 use interpreter::{BeamInterpreter, BeamInterpreterMakeError};
@@ -46,7 +46,7 @@ impl From<BeamInterpreterMakeError> for InitError {
 
 /// Initializes an Erlang virtual machine given a base image
 pub fn init(base_image: &TarFile) -> Result<!, InitError> {
-    // create context
+    boot_stage::same_level("Initializing context");
     let mut context: LocalContext = Default::default();
     let base_atom = context.atom_table.get_or_make_atom("base");
     let platform_atom = context.atom_table.get_or_make_atom("platform");
@@ -54,16 +54,18 @@ pub fn init(base_image: &TarFile) -> Result<!, InitError> {
     let x86_64_uefi_atom = context.atom_table.get_or_make_atom("x86_64-uefi");
     let main_atom = context.atom_table.get_or_make_atom("main");
 
-    // load base application package
+    boot_stage::same_level("Loading base application");
     let base_app = base_image.read_file("base.bop").ok_or(InitError::NoBaseApp)?;
     let base_app = Application::from_bop_file(base_app, &mut context)?;
     context.applications.insert(base_app.name.clone(), base_app);
 
-    // create a scheduler and initial ports
+    boot_stage::same_level("Creating scheduler");
     let mut scheduler = PrimitiveScheduler::new(context, 0);
+
+    boot_stage::same_level("Spawning basic ports");
     let log_port = scheduler.add::<LogPort>(&(), 0).unwrap();
 
-    // construct initial arguments to 'base:main':main/2
+    boot_stage::same_level("Constructing arguments to 'main'");
     let config = LocalTerm::Map(MapTerm(HashMap::from([
         (platform_atom.into(), x86_64_uefi_atom.into())
     ])));
@@ -71,11 +73,11 @@ pub fn init(base_image: &TarFile) -> Result<!, InitError> {
         (log_port_atom.into(), log_port.into())
     ])));
 
-    // Run 'base:main':main/2
+    boot_stage::same_level("Spawning main process");
     let arguments: &[LocalTerm] = &[config, ports];
     let interpreter_init = (base_atom.clone(), main_atom.clone(), main_atom.clone(), arguments);
     scheduler.add::<BeamInterpreter>(&interpreter_init, 0)?;
 
-    // here we go!
+    boot_stage::same_level("Launching scheduler");
     scheduler.run();
 }

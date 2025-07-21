@@ -40,10 +40,11 @@ fn rdtsc_serializing() -> usize {
     (rax & 0xffff_ffff) | (rdx << 32)
 }
 
+#[allow(clippy::unusual_byte_groupings)]
 pub fn calibrate() {
     // SAFETY: this code may cause race conditions. However, it is assumed that
-    // the containing codebase does not use the keyboard controller and the PIT
-    // while this function
+    // the containing codebase does not use the PIC and the PIT while this
+    // function is running
     let pic_master = unsafe { Port::new(0x21) };
     let pic_slave = unsafe { Port::new(0xa1) };
     let pit_mc = unsafe { Port::new(0x43) };

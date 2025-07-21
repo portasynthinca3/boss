@@ -7,6 +7,7 @@ edition = "2021"
 boss_common = { path = "../boss_common" }
 log = { workspace = true }
 miniz_oxide = { version = "0.7.4", default-features = false }
+spin = "0.9.8"
 uefi = { workspace = true }
 
 [features]

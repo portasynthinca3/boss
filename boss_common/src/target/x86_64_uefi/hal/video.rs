@@ -3,6 +3,7 @@
 
 use uefi::{proto::console::gop::{GraphicsOutput, ModeInfo, PixelFormat}, table::{Boot, SystemTable}};
 
+#[allow(dead_code)]
 pub struct Video {
     mode: ModeInfo,
     framebuffer: *mut u8,

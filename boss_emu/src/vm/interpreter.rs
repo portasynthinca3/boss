@@ -119,7 +119,7 @@ impl BeamState {
                 let x = *x;
                 if x >= self.x.len() {
                     let extend_by = x - self.x.len() + 1;
-                    self.x.extend(iter::repeat(LocalTerm::nil()).take(extend_by));
+                    self.x.extend(iter::repeat_n(LocalTerm::nil(), extend_by));
                 }
                 self.x[x] = value;
                 Ok(())
@@ -237,7 +237,7 @@ impl BeamInterpreter {
                 let stack = stack.try_into().map_err(|_| Terminate::BadInsn)?;
                 let live = live.try_into().map_err(|_| Terminate::BadInsn)?;
                 self.state.x.truncate(live);
-                self.state.y.extend(iter::repeat(YRegister::Term(LocalTerm::nil())).take(stack));
+                self.state.y.extend(iter::repeat_n(YRegister::Term(LocalTerm::nil()), stack));
                 Ok(())
             },
 
@@ -396,14 +396,14 @@ impl BeamInterpreter {
             (Opcode::IsNonemptyList, [Some(Operand::Label(fail)), Some(val), ..]) => {
                 let val = self.state.get_operand(val)?;
                 let LocalTerm::List(list, _) = val else { jump!(self, *fail) };
-                if list.len() == 0 { jump!(self, *fail) };
+                if list.is_empty() { jump!(self, *fail) };
                 Ok(())
             },
 
             (Opcode::IsNil, [Some(Operand::Label(fail)), Some(val), ..]) => {
                 let val = self.state.get_operand(val)?;
                 let LocalTerm::List(list, _) = val else { jump!(self, *fail) };
-                if list.len() != 0 { jump!(self, *fail) };
+                if !list.is_empty() { jump!(self, *fail) };
                 Ok(())
             },
 

@@ -19,7 +19,7 @@ impl SerialLogger {
             Level::Error => "\x1b[31m err", // red
             Level::Warn =>  "\x1b[33mwarn", // yellow
             Level::Info =>  "\x1b[34minfo", // blue
-            Level::Debug => "\x1b[36mdebg", // cyan
+            Level::Debug => "\x1b[35mdebg", // magenta
             Level::Trace => "\x1b[37mtrac", // white
         }
     }
@@ -46,8 +46,10 @@ impl log::Log for SerialLogger {
             // write!
             let mut guard = self.port.lock();
             match (module, line) {
-                (Some(module), Some(line)) =>
-                    guard.write_fmt(format_args!("[{sec}.{usec:06} {level} {mod_color}{module}:{line}{reset}] {args}\r\n")),
+                (Some(module), Some(line)) => {
+                    let module = module.split("::").last().unwrap();
+                    guard.write_fmt(format_args!("[{sec}.{usec:06} {level} {mod_color}{module}:{line}{reset}] {args}\r\n"))
+                },
                 (Some(module), None) =>
                     guard.write_fmt(format_args!("[{sec}.{usec:06} {level} {mod_color}{module}{reset}] {args}\r\n")),
                 _ =>

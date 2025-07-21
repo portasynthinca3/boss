@@ -332,6 +332,9 @@ unsafe impl<T: Allocator> GlobalAlloc for LateAllocator<T> {
 static mut ALLOCATOR: LateAllocator<LinkedListAllocator> = LateAllocator(None);
 
 /// Initializes the default global allocator
+/// 
+/// # Safety
+/// This function must only be called once
 pub unsafe fn initialize_default(addr_space: AddressSpace) {
     let allocator = LinkedListAllocator::new(layout::EMULATOR_HEAP_BASE, addr_space)
         .expect("failed to create global allocator");

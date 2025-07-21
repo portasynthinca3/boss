@@ -48,7 +48,7 @@ impl core::fmt::Display for LocalAtomRef {
 
 impl core::fmt::Debug for LocalAtomRef {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "LocalAtomRef({})", self)
+        write!(f, "LocalAtomRef({self})")
     }
 }
 

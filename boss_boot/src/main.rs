@@ -6,6 +6,7 @@ use miniz_oxide::inflate::{self, TINFLStatus, core::inflate_flags::*};
 use uefi::{
     prelude::*, table::{boot::{MemoryMap, MemoryType}, cfg::ACPI2_GUID},
 };
+use spin::Once;
 
 use boss_common::{
     target::{
@@ -52,8 +53,6 @@ const COMPRESSED_IMAGES: [(ImageType, VirtAddr, &[u8]); 2] = [
         include_bytes!("../../.build/bosbaima.tar.zlib")
     ),
 ];
-
-static mut LOGGER: Option<SerialLogger> = None;
 
 /// Initializes the virtual memory manager by creating an address space from the UEFI mapping
 fn init_virt_memmgr(mem_map: &MemoryMap<'_>) -> Result<AddressSpace, MemMgrError> {
@@ -167,21 +166,17 @@ fn run_executable(info: &ElfLoadedProgramInfo, stack_top: VirtAddr, glue: *const
     }
 }
 
+static LOGGER: Once<SerialLogger> = Once::new();
+
 /// Bootloader entry point
 #[cfg_attr(not(test), entry)]
 fn main(image_handle: Handle, system_table: SystemTable<Boot>) -> Status {
     wall_clock::calibrate();
-    // init serial logger
-    unsafe {
-        // SAFETY: this static var is initialized and subsequently borrowed
-        // exactly once
-        LOGGER = Some(SerialLogger::new(0));
-        log::set_logger(LOGGER.as_ref().unwrap()).unwrap();
-    }
+    log::set_logger(LOGGER.call_once(|| SerialLogger::new(0))).unwrap();
+
+    log::set_max_level(log::LevelFilter::Info);
     #[cfg(feature = "log-trace")]
     log::set_max_level(log::LevelFilter::Trace);
-    #[cfg(not(feature = "log-trace"))]
-    log::set_max_level(log::LevelFilter::Info);
 
     log::info!("boss_boot started");
 
@@ -217,7 +212,7 @@ fn main(image_handle: Handle, system_table: SystemTable<Boot>) -> Status {
         if let ImageType::ElfExecutable(load_address) = img_type {
             let elf_file = ElfFile::new(image).unwrap();
             let info = elf_file.load_program(&mut addr_space, *load_address).unwrap();
-            log::debug!("{:?}", info);
+            log::debug!("{info:?}");
             program_info = Some(info);
 
             // unload now unneeded compressed image

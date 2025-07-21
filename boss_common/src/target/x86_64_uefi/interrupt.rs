@@ -43,6 +43,12 @@ use bitfield_struct::bitfield;
 
 use super::memmgr::{phys, PAGE_SIZE, VirtAddr, virt::{AddressSpace, TableAttrs}};
 use super::segment::*;
+use crate::util::boot_stage;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Error {
+    TriedToInstallDoubleFault,
+}
 
 /// Disables interrupts. It is recommended to only keep them that way for a very
 /// short amount of time, enabling them back with [`enable_external`] as soon as
@@ -61,7 +67,7 @@ pub fn enable_external() {
 
 /// There are 256 interrupt vectors on x86, but this implementation considers it
 /// unnecessary to support more than 128.
-const MAX_INTERRUPT_CNT: usize = 128;
+pub const MAX_INTERRUPT_CNT: u8 = 128;
 
 /// The state that the CPU was in when it was interrupted. Contains:
 ///   - General-purpose registers (`RAX`-`RDX`, `RSP`, `RBP`, `RSI`, `RDI`,
@@ -170,7 +176,7 @@ impl TryFrom<u8> for Vector {
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         if let Ok(intr) = value.try_into() {
             Ok(Self::Internal(intr))
-        } else if value >= 32 && value < MAX_INTERRUPT_CNT as u8 {
+        } else if (32..MAX_INTERRUPT_CNT).contains(&value) {
             Ok(Self::External(value))
         } else {
             Err(())
@@ -419,7 +425,8 @@ struct IdtEntry {
     _rsvd: u32,
 }
 
-#[repr(packed)]
+#[allow(dead_code)]
+#[repr(C, packed)]
 struct RawTss {
     _rsvd0: u32,
     rsp: [VirtAddr; 3],
@@ -430,16 +437,17 @@ struct RawTss {
     iopb: u16,
 }
 
-struct RawIdt(*mut [IdtEntry; MAX_INTERRUPT_CNT], *mut RawTss);
+#[allow(dead_code)]
+struct RawIdt(*mut [IdtEntry; MAX_INTERRUPT_CNT as usize], *mut RawTss);
 
 impl RawIdt {
     fn new() -> (RawIdt, CommonSelectors) {
         // allocate space for both tables
-        assert!(size_of::<[IdtEntry; MAX_INTERRUPT_CNT]>() <= PAGE_SIZE);
+        assert!(size_of::<[IdtEntry; MAX_INTERRUPT_CNT as usize]>() <= PAGE_SIZE);
         assert!(size_of::<RawTss>() <= PAGE_SIZE);
         let pages = phys::allocate(2);
         let pages: (VirtAddr, VirtAddr) = (pages[0].into(), pages[1].into());
-        let idt: *mut [IdtEntry; MAX_INTERRUPT_CNT] = pages.0.into();
+        let idt: *mut [IdtEntry; MAX_INTERRUPT_CNT as usize] = pages.0.into();
         let tss: *mut RawTss = pages.1.into();
 
         // do the annoying GDT thing
@@ -449,7 +457,7 @@ impl RawIdt {
     }
 
     unsafe fn set_as_current(&self) {
-        let idtr = DescTableRegister::make(self.0.into(), (size_of::<[IdtEntry; MAX_INTERRUPT_CNT]>() - 1) as u16);
+        let idtr = DescTableRegister::make(self.0.into(), (size_of::<[IdtEntry; MAX_INTERRUPT_CNT as usize]>() - 1) as u16);
         idtr.load(DescTableKind::Interrupt);
     }
 
@@ -486,18 +494,20 @@ impl Manager {
     /// them can be active at a time. Having one per CPU is the intended use
     /// case.
     pub fn new(addr_space: &mut AddressSpace) -> (Manager, CommonSelectors) {
-        // make GDT, IDT and TSS
+        boot_stage::new_level();
+
+        boot_stage::same_level("Constructing GDT, IDT and TSS");
         let (mut idt, selectors) = RawIdt::new();
 
-        // make default trampolines
-        assert!(size_of::<[[u8; TRAMPOLINE_SIZE]; MAX_INTERRUPT_CNT]>() <= PAGE_SIZE);
+        boot_stage::same_level("Constructing trampolines");
+        assert!(size_of::<[[u8; TRAMPOLINE_SIZE]; MAX_INTERRUPT_CNT as usize]>() <= PAGE_SIZE);
         let pages = phys::allocate(1);
         let phys_page = pages[0];
         let virt_page: VirtAddr = phys_page.into();
         let tramp: *mut [u8; TRAMPOLINE_SIZE] = virt_page.into();
         // SAFETY: this buffer has just been allocated by us, is of the correct
         // size, and is static.
-        let tramp = unsafe { core::slice::from_raw_parts_mut(tramp, MAX_INTERRUPT_CNT) };
+        let tramp = unsafe { core::slice::from_raw_parts_mut(tramp, MAX_INTERRUPT_CNT as usize) };
 
         for (i, tramp) in tramp.iter_mut().enumerate() {
             if let Ok(vec) = (i as u8).try_into() {
@@ -522,6 +532,7 @@ impl Manager {
             }
         }
 
+        boot_stage::same_level("Mapping memory");
         // allow execution in the page with trampolines
         addr_space.modify().map_range(
             virt_page,
@@ -531,6 +542,7 @@ impl Manager {
             false
         ).unwrap();
 
+        boot_stage::end_level();
         (Manager { idt, selectors, trampolines: tramp }, selectors)
     }
 
@@ -573,8 +585,8 @@ impl Manager {
     /// 
     /// This method does not accept closures, only functions and simple lambdas
     /// (closures which don't capture anything).
-    pub fn set_handler(&mut self, vector: Vector, handler: Option<Handler>) -> Result<(), ()> {
-        if vector == Vector::Internal(ExceptionType::DoubleFault) { return Err(()) }
+    pub fn set_handler(&mut self, vector: Vector, handler: Option<Handler>) -> Result<(), Error> {
+        if vector == Vector::Internal(ExceptionType::DoubleFault) { return Err(Error::TriedToInstallDoubleFault) }
 
         let trampoline = make_trampoline(vector.into(), vector.cpu_pushes_errcode(), handler);
         mask_external();

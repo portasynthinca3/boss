@@ -18,6 +18,7 @@ regex = "1.10"
 
 [features]
 log-trace = []
+log-debug = []
 trace-pmm = ["boss_common/trace-pmm"]
 trace-malloc = ["boss_common/trace-malloc"]
 trace-hal-video = ["boss_common/trace-hal-video"]

@@ -8,6 +8,7 @@ pub mod tar;
 pub mod cursor;
 pub mod serial_logger;
 pub mod elf;
+pub mod boot_stage;
 
 /// Converts a null-terminated string representation into a string slice
 pub fn from_null_term(source: &[u8]) -> Result<&str, Utf8Error> {

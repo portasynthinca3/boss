@@ -89,6 +89,10 @@ pub enum MemMgrError {
 
 impl PhysAddr {
     /// Clears the page pointed to by the address
+    /// 
+    /// # Safety
+    /// There must not be any references, shared or exclusive, to any content
+    /// within the page
     pub unsafe fn clear_page(&self) -> Result<(), MemMgrError> {
         if self.0 % PAGE_SIZE != 0 { return Err(MemMgrError::BadAlignment); }
         unsafe {

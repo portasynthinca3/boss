@@ -42,6 +42,10 @@ impl DescTableRegister {
     }
     
     /// Loads the pointer into one of the table registers
+    /// 
+    /// # Safety
+    /// This function fundamentally changes the configuration of the memory
+    /// layout. Don't use outside of this module.
     pub unsafe fn load(&self, kind: DescTableKind) {
         let address = self as *const Self as usize;
         if address % 8 != 0 {
@@ -207,6 +211,10 @@ pub enum SelectorRegister {
 
 impl Selector {
     pub fn value(&self) -> u16 { self.0 }
+
+    /// # Safety
+    /// This function fundamentally changes the configuration of the memory
+    /// layout. Don't use outside of this module.
     pub unsafe fn set(&self, kind: SelectorRegister) {
         match kind {
             SelectorRegister::Code => asm!(

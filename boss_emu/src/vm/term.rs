@@ -1,6 +1,9 @@
 //! Erlang Term implementation
 
-use core::{array::TryFromSliceError, hash::{Hash, Hasher, SipHasher}};
+#[allow(deprecated)]
+use core::hash::SipHasher;
+
+use core::{array::TryFromSliceError, hash::{Hash, Hasher}};
 use alloc::{boxed::Box, string::String, vec::Vec};
 
 use hashbrown::HashMap;
@@ -10,8 +13,8 @@ use strum_macros::FromRepr;
 use super::{scheduler::{Eid, PORT_START}, state::{LocalAtomRef, LocalContext}};
 use boss_common::util::cursor::Cursor;
 
-/// An `f64` that implements `Eq`, `Ord` and `Hash`. Yes, I'm aware of the
-/// dangers.
+// /// An `f64` that implements `Eq`, `Ord` and `Hash`. Yes, I'm aware of the
+// /// dangers.
 // #[derive(Debug, Clone, Copy, PartialOrd)]
 // pub struct FloatTerm(f64);
 // impl FloatTerm {
@@ -138,7 +141,7 @@ impl core::fmt::Debug for LocalTerm {
         match *self {
             Atom(ref reference) => {
                 let str: alloc::rc::Rc<str> = reference.into();
-                write!(f, "{}", str)
+                write!(f, "{str}")
             },
             Integer(ref int) => write!(f, "{int}"),
             // Float(float) => write!(f, "{float}"),
@@ -162,6 +165,7 @@ impl core::fmt::Debug for LocalTerm {
                 }
             }
             Reference(parts) => {
+                #[allow(deprecated)]
                 let mut hash = SipHasher::default();
                 parts.hash(&mut hash);
                 write!(f, "#Ref<{:04x}>", hash.finish() & 0xffff)
@@ -323,10 +327,7 @@ impl LocalTerm {
     pub fn get_tagged_tuple<const S: usize>(&self, tag: &str, context: &LocalContext) -> Result<&[LocalTerm; S], TermError>
     where [(); S + 1]: Sized
     {
-        let tuple: &[LocalTerm; S + 1] = match self.get_tuple() {
-            Ok(t) => t,
-            Err(e) => return Err(e),
-        };
+        let tuple: &[LocalTerm; S + 1] = self.get_tuple()?;
 
         let expected_tag = context.atom_table.get_existing_atom(tag)
             .ok_or(TermError::TagError)?; // if the key that we're looking for is not in the atom table,
@@ -488,7 +489,7 @@ impl LocalTerm {
                 }
                 let improper_tail = Self::from_etf_cursor(cursor, context)?;
                 let improper_tail = match improper_tail {
-                    LocalTerm::List(elements, None) if elements.len() == 0 => None,
+                    LocalTerm::List(elements, None) if elements.is_empty() => None,
                     term => Some(Box::new(term)),
                 };
                 Ok(LocalTerm::List(elements.into_boxed_slice(), improper_tail))

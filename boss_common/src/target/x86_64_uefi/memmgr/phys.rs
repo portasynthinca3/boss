@@ -13,6 +13,7 @@ use crate::{
         byte_size::ByteSize,
         dyn_arr::{DynArr, DYN_ARR_CAPACITY},
         convert_slice_in_place,
+        boot_stage,
     },
 };
 
@@ -327,8 +328,7 @@ pub fn init(mem_map: &MemoryMap) {
         used_by_pmm += ByteSize(range.header_pages * PAGE_SIZE);
     }
 
-    log::info!("memory: {} available, -{} used by PMM, +{} after full reclaim",
-        avail_already, used_by_pmm, add_after_reclaim);
+    log::info!("memory: {avail_already} available, -{used_by_pmm} used by PMM, +{add_after_reclaim} after full reclaim");
     // checkpoint::advance(Checkpoint::PhysMemMgr).unwrap();
 }
 
@@ -433,16 +433,19 @@ pub fn export() -> PmmState {
 /// # Safety
 /// Nobody else should be using the state except you.
 pub unsafe fn import(state: PmmState) {
+    boot_stage::new_level();
     assert!(runtime_cfg::get().contains(CfgFlags::ExecutingInUpperHalf));
 
     let guard = ALL_RANGES.upgradeable_read();
     if (*guard).as_ref().is_some() { panic!("pmm already initialized") };
 
+    boot_stage::same_level("Getting ranges");
     let ranges_ptr: *mut PhysAddr = Into::<VirtAddr>::into(state.ranges).into();
     let phys_ranges: &'static mut [PhysAddr] = core::slice::from_raw_parts_mut(ranges_ptr, state.range_count);
     let virt_ranges: &'static mut [VirtAddr] = convert_slice_in_place(phys_ranges);
     let ranges: AllRanges = core::mem::transmute(virt_ranges);
 
+    boot_stage::same_level("Fixing addresses");
     for range in ranges.iter_mut() {
         let bitmap_len = range.bitmap.len();
         let bitmap_phys_addr: PhysAddr = core::mem::transmute(range.bitmap.as_mut_ptr());
@@ -452,4 +455,5 @@ pub unsafe fn import(state: PmmState) {
     }
 
     *guard.upgrade() = Some(ranges);
+    boot_stage::end_level();
 }
