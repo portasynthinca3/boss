@@ -1,6 +1,5 @@
 .build
 /.vscode
-/.gdbinit
 /.gdb_history
 /qemu.log
 erl_crash.dump

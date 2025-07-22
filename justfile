@@ -80,17 +80,13 @@ iso: boot
     mcopy -i .build/boss.iso .build/boss_boot.efi ::/EFI/BOOT/BOOTX64.EFI
     mcopy -i .build/boss.iso .build/bosbaima.tar ::/BOSS/BOSBAIMA.TAR
 
+qemu_args := "-enable-kvm -drive if=pflash,format=raw,readonly=on,file=/usr/share/ovmf/x64/OVMF.4m.fd -device ahci,id=ahci -device ide-hd,drive=disk,bus=ahci.0 -drive if=none,id=disk,format=raw,file=.build/boss.iso -m 128 -smp 4,sockets=1,cores=2,threads=2 -boot menu=off,splash-time=0 -d int -D qemu.log"
+
 # Boot ISO in QEMU
 qemu: iso
-    qemu-system-x86_64 -enable-kvm \
-        -drive if=pflash,format=raw,readonly=on,file=/usr/share/ovmf/x64/OVMF.4m.fd \
-        -device ahci,id=ahci \
-        -device ide-hd,drive=disk,bus=ahci.0 \
-        -drive if=none,id=disk,format=raw,file=.build/boss.iso \
-        -m 128 \
-        -smp 4,sockets=1,cores=2,threads=2 \
-        -boot menu=off,splash-time=0 \
-        -d int \
-        -D qemu.log \
-        -s \
-        -serial stdio
+    qemu-system-x86_64 {{qemu_args}} -serial stdio -gdb tcp::1234
+qemu_pause: iso
+    qemu-system-x86_64 {{qemu_args}} -serial stdio -gdb tcp::1234 -S
+
+gdb:
+    rust-gdb

@@ -1,10 +1,9 @@
 //! Parses BEAM modules from their binary representation in memory. Based on
 //! Chapter 6 of the BEAM Book, the BEAM source code and just general googling.
 
-use alloc::{borrow::ToOwned, boxed::Box, vec::Vec, vec};
+use alloc::{borrow::ToOwned, boxed::Box, vec::Vec};
 
 use hashbrown::HashMap;
-use miniz_oxide::inflate;
 use num_bigint::{BigInt, Sign};
 
 include!(concat!(env!("OUT_DIR"), "/genop.rs"));
@@ -26,10 +25,11 @@ pub enum FormatError {
     InvalidEtf(TermError),
     LabelOperandType,
     LabelOperandNotSequential,
-    InvalidCompressedData,
+    NonZeroDecompressedLitSize,
     AllocListOperandTagType,
     AllocListOperandInvalidTag,
     AllocListOperandItemCountType,
+    AtomTableOperandType,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -330,11 +330,14 @@ impl Module {
 
         // parse atom table (AtU8 chunk, Atom not supported)
         let mut cursor = Cursor::new(chunks.get("AtU8").ok_or(LoadError::NotImplemented)?.to_owned()); // probably only contains legacy Atom table
-        let atom_cnt = cursor.read_u32_be() as usize;
+        let atom_cnt = -cursor.read_i32_be() as usize; // https://github.com/erlang/otp/blob/359e254aba76c1986b671b45fd320c6cc6720ca8/lib/compiler/src/beam_asm.erl#L301
         let mut module_atoms = Vec::with_capacity(atom_cnt);
         loop {
             if cursor.reached_end() { break; }
-            let atom_size = cursor.read_u8() as usize;
+            let Operand::Number(atom_size) = Operand::read(&mut cursor, &[], &[])? else {
+                return Err(LoadError::FormatError(FormatError::AtomTableOperandType))
+            };
+            let atom_size: usize = atom_size.try_into().map_err(|_| LoadError::FormatError(FormatError::NumberOperandTooBig))?;
             let atom_name = cursor.read_utf8(atom_size).map_err(|_| LoadError::FormatError(FormatError::InvalidUtf8))?;
             let atom = context.atom_table.get_or_make_atom(atom_name);
             module_atoms.push(atom);
@@ -384,10 +387,9 @@ impl Module {
         let literals = if let Some(lit_chunk) = chunks.get("LitT") {
             let mut cursor = Cursor::new(lit_chunk);
             let decompressed_sz = cursor.read_u32_be() as usize;
-            let compressed = cursor.read_slice(cursor.remaining());
-            let mut decompressed = vec![0; decompressed_sz];
-            inflate::decompress_slice_iter_to_slice(decompressed.as_mut_slice(), core::iter::once(compressed), true, false).map_err(|_| LoadError::FormatError(FormatError::InvalidCompressedData))?;
-            let mut cursor = Cursor::new(decompressed.as_slice());
+            if decompressed_sz != 0 {
+                return Err(LoadError::FormatError(FormatError::NonZeroDecompressedLitSize));
+            }
             let literal_cnt = cursor.read_u32_be() as usize;
             let mut literals = Vec::with_capacity(literal_cnt);
             loop {
@@ -401,7 +403,6 @@ impl Module {
         } else {
             Box::new([])
         };
-        // let mut cursor = Cursor::new(chunks.get("LitT").ok_or(LoadError::FormatError(FormatError::MissingTable("LitT")))?.to_owned());
 
         // parse instruction stream within Code chunk
         let mut instructions = Vec::new();

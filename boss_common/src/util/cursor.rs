@@ -33,6 +33,12 @@ impl<'d> Cursor<'d> {
         u32::from_be_bytes(slice)
     }
 
+    pub fn read_i32_be(&mut self) -> i32 {
+        let slice: [u8; 4] = self.data[self.position .. self.position + 4].try_into().unwrap();
+        self.position += 4;
+        i32::from_be_bytes(slice)
+    }
+
     pub fn read_u64_be(&mut self) -> u64 {
         let slice: [u8; 8] = self.data[self.position .. self.position + 8].try_into().unwrap();
         self.position += 8;

@@ -180,7 +180,7 @@ To build an ISO, you will need:
   - GNU MTools v4.x (tested with `4.0.44`)
   - GNU binutils v2.x (tested with `2.42.0`)
   - Rust v1.82-nightly (tested with `1.82.0-nightly (7120fdac7 2024-07-25)`)
-  - Erlang/OTP 27 (tested with `Erlang/OTP 27 [erts-15.0.1]`, 26 and below will
+  - Erlang/OTP 28 (tested with `Erlang/OTP 28 [erts-16.0.1]`, 27 and below will
     _not_ work)
 
 Build an ISO with:
