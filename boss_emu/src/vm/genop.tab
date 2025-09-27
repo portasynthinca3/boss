@@ -4,7 +4,9 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 1998-2024. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 1998-2025. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -328,6 +330,9 @@ BEAM_FORMAT_NUMBER=0
 ## @spec set_tuple_element NewElement Tuple Position
 ## @doc  Update the element at position Position of the tuple Tuple
 ##       with the new element NewElement.
+##
+##       TODO: As of Erlang/OTP 29, this instruction is no longer emitted
+##       by the compiler.
 67: set_tuple_element/3
 
 #
@@ -698,3 +703,13 @@ BEAM_FORMAT_NUMBER=0
 ## @spec executable_line Location Index
 ## @doc  Provide location for an executable line.
 183: executable_line/2
+
+# OTP 28
+
+## @spec debug_line Kind Location Index Live
+## @doc  Provide location for a place where a break point can be placed.
+##       Kind can be one of:
+##
+##       * {atom,entry}       - Function entry.
+##       * {atom,line}        - Any other line in the function.
+184: debug_line/4
