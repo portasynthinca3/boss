@@ -122,7 +122,7 @@ pub struct LocalTransferAgent {
 impl TransferAgent for LocalTransferAgent {
     fn route_message(&mut self, receiver: Eid, message: LocalTerm, mut ttl: usize) {
         #[cfg(feature = "trace-messages")]
-        log::trace!("send {:?} to {:?} (ttl {ttl})", message, receiver);
+        log::trace!("send {message:?} to {receiver:?} (ttl {ttl})");
         if self.local_executables.contains(&receiver) {
             self.mailbox.push_back((receiver, message));
         } else {

@@ -2,14 +2,12 @@
 //! page allocator.
 
 use core::{mem::{align_of, size_of}, ptr::{self, NonNull}};
-use alloc::alloc::{AllocError, Allocator, GlobalAlloc, Layout};
+use alloc::alloc::{AllocError, Allocator, Layout};
+
+use crate::target::current::memmgr::*;
+use crate::util::byte_size::ByteSize;
 
 use spin::Mutex;
-
-use crate::util::byte_size::ByteSize;
-use super::{MemMgrError, virt::AddressSpace, VirtAddr, phys, layout, PAGE_SIZE};
-
-pub type Result<T> = core::result::Result<T, MemMgrError>;
 
 // Two kinds of padding are referred to in this module: "pre" and "post".
 // "Pre" padding is inserted between the block header and the allocated data.
@@ -20,9 +18,16 @@ pub type Result<T> = core::result::Result<T, MemMgrError>;
 //  ... | BlockHdr | pre_padding | allocated data | post_padding | BlockHdr | ...
 // -----+----------+-------------+----------------+--------------+----------+----
 
+const PAGE_SIZE: usize = MemoryParameters::PAGE_SIZE;
+
+// These strings are easy to spot in a hexdump
+const ALLOCATED_SIGNATURE: [u8; 8] = [b'U', b's', b'e', b'd', b'B', b'l', b'o', b'k'];
+const HEAD_SIGNATURE: [u8; 8] = [b'A', b'l', b'o', b'c', b'H', b'e', b'a', b'd'];
+const FREE_SIGNATURE: [u8; 8] = [b'F', b'r', b'e', b'e', b'B', b'l', b'o', b'k'];
+
 /// Block header. Present at the start of both free and non-free blocks.
 struct BlockHdr {
-    used: bool,
+    signature: [u8; 8],
     /// Total block size, including this header and all paddings
     size: usize,
     next: Option<&'static mut BlockHdr>,
@@ -36,7 +41,7 @@ impl BlockHdr {
 
     /// Gets the virtual address of a block header
     fn addr(&self) -> VirtAddr {
-        self.into()
+        VirtAddr::from_ref(self).unwrap()
     }
 
     /// Allocates a specific layout, possibly inserting a new free block after
@@ -45,11 +50,11 @@ impl BlockHdr {
         let pre_padding = Self::layout().padding_needed_for(layout.align());
         // includes all sizes and paddings
         let block = Layout::from_size_align(Self::layout().size() + pre_padding + layout.size(), Self::layout().align()).unwrap().pad_to_align();
-        if self.used || self.size < block.size() {
+        if self.is_used() || self.size < block.size() {
             return None;
         }
 
-        self.used = true;
+        self.signature = ALLOCATED_SIGNATURE;
         // get address of data to return
         let blk_addr = self as *mut _ as usize;
         let data_addr = blk_addr + Self::layout().size() + pre_padding;
@@ -65,7 +70,7 @@ impl BlockHdr {
                 let new_blk = (blk_addr as *mut BlockHdr).byte_add(block.size());
                 // SAFETY: valid for writes, properly aligned
                 *new_blk = BlockHdr {
-                    used: false,
+                    signature: FREE_SIGNATURE,
                     next,
                     size: self.size - block.size(),
                 };
@@ -78,56 +83,107 @@ impl BlockHdr {
 
         NonNull::new(data)
     }
+
+    fn is_used(&self) -> bool {
+        if self.signature == ALLOCATED_SIGNATURE { return true };
+        if self.signature == HEAD_SIGNATURE { return true };
+        if self.signature == FREE_SIGNATURE { return false };
+        panic!("memory corruption");
+    }
 }
 
 impl core::fmt::Debug for BlockHdr {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let addr: VirtAddr = self.into();
+        let addr: VirtAddr = VirtAddr::from_ref(self).unwrap();
         f.debug_struct("Block")
             .field("address", &addr)
-            .field("used", &self.used)
+            .field("used", &self.is_used())
             .field("size", &ByteSize(self.size))
             .finish()
     }
 }
 
-pub struct LinkedListAllocator {
+pub struct LinkedListAllocator<'p> {
     first_block: Mutex<BlockHdr>,
-    address_space: Mutex<AddressSpace>, // FIXME: design: we shouldn't be able to control the entire address space
+    addr_space: Mutex<Option<AddrSpace<'p>>>,
 }
 
-impl LinkedListAllocator {
-    /// Creates a new allocator.
-    /// 
-    /// # Safety
-    /// The function is unsafe in case there are other objects at any address
-    /// above `bottom`.
-    pub unsafe fn new(bottom: VirtAddr, mut address_space: AddressSpace) -> Result<LinkedListAllocator> {
-        // place first block header
-        let pages = phys::allocate(1);
-        if pages.is_empty() { return Err(MemMgrError::OutOfMemory); }
-        let first_block: VirtAddr = bottom;
-        address_space.modify().map_range(first_block, pages[0], 1, Default::default(), false).unwrap();
-        let first_block = first_block.0 as *mut BlockHdr;
-        *first_block = BlockHdr {
-            used: false,
-            next: None,
-            size: PAGE_SIZE,
+impl<'p> LinkedListAllocator<'p> {
+    /// Creates a new allocator. Takes ownership of the entire provided address
+    /// space, and operates within it.
+    pub fn new(addr_space: AddrSpace<'p>) -> Result<Self, Error> {
+        let allocator = LinkedListAllocator {
+            first_block: Mutex::new(BlockHdr { signature: HEAD_SIGNATURE, size: 0, next: None }),
+            addr_space: Mutex::new(Some(addr_space)),
         };
-        let first_block = first_block.as_uninit_mut().unwrap().assume_init_mut();
+
+        let mut block_guard = allocator.first_block.lock();
+        let mut last_block = &mut *block_guard;
+        let mut space_guard = allocator.addr_space.lock();
+        let mut addr_space = space_guard.as_mut().unwrap().modify();
+
+        for i in 0..addr_space.ranges().count() {
+            let range = addr_space.ranges().nth(i).unwrap();
+            let start = addr_space.allocate_range(*range.start(), 1, Default::default(), AllocReturn::Start)?;
+            let block = start.to_mut_ptr();
+            let block = unsafe {
+                *block = BlockHdr {
+                    signature: FREE_SIGNATURE,
+                    next: None,
+                    size: PAGE_SIZE,
+                };
+                block.as_uninit_mut().unwrap().assume_init_mut()
+            };
+
+            last_block.next = Some(block);
+            last_block = last_block.next.as_mut().unwrap();
+        }
 
         #[cfg(feature = "trace-malloc")]
-        log::trace!("new LinkedListAllocator: bottom={bottom:?}, address_space={address_space:?}");
+        log::trace!("new LinkedListAllocator {:?}", addr_space.deref());
 
-        // return allocator
-        Ok(LinkedListAllocator {
-            first_block: Mutex::new(BlockHdr { used: true, size: 0, next: Some(first_block) }),
-            address_space: Mutex::new(address_space),
-        })
+        drop(block_guard);
+        drop(addr_space);
+        drop(space_guard);
+        Ok(allocator)
+    }
+
+    /// Consumes the allocator, freeing all allocated data and returning the
+    /// address space it was assigned to.
+    pub fn destroy(mut self) -> AddrSpace<'p> {
+        self.do_destroy();
+        (*self.addr_space.lock()).take().unwrap()
+    }
+
+    fn do_destroy(&mut self) {
+        let mut space_guard = self.addr_space.lock();
+        let Some(addr_space) = space_guard.as_mut() else { return };
+
+        for i in 0..addr_space.ranges().count() {
+            let range = addr_space.ranges().nth(i).unwrap();
+            addr_space.modify().deallocate_range(range).unwrap();
+        }
+    }
+
+    fn compact_free_blocks(&self) {
+        let mut guard = self.first_block.lock();
+        let mut block = &mut *guard;
+
+        loop {
+            if !block.is_used() && let Some(ref mut next) = block.next && !next.is_used() {
+                block.size += next.size;
+                block.next = next.next.take();
+            } else if block.next.is_some() {
+                // block = next;
+                block = block.next.as_mut().unwrap();
+            } else {
+                break;
+            }
+        }
     }
 }
 
-impl core::fmt::Debug for LinkedListAllocator {
+impl core::fmt::Debug for LinkedListAllocator<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         writeln!(f, "LinkedListAllocator:")?;
         let guard = self.first_block.lock();
@@ -143,7 +199,7 @@ impl core::fmt::Debug for LinkedListAllocator {
                 write!(f, "h")?;
             }
             for _ in 0 .. (current.size / 8).min(64) {
-                if current.used {
+                if current.is_used() {
                     write!(f, "x")?;
                 } else {
                     write!(f, "-")?;
@@ -154,7 +210,7 @@ impl core::fmt::Debug for LinkedListAllocator {
             }
             writeln!(f)?;
             display_capacity += display_size;
-            if current.used { display_used += display_size };
+            if current.is_used() { display_used += display_size };
             previous = previous.next.as_ref().unwrap();
         }
 
@@ -165,7 +221,7 @@ impl core::fmt::Debug for LinkedListAllocator {
     }
 }
 
-unsafe impl Allocator for LinkedListAllocator {
+unsafe impl Allocator for LinkedListAllocator<'_> {
     fn allocate(&self, layout: Layout) -> core::result::Result<NonNull<[u8]>, AllocError> {
         // find suitable block
         let mut guard = self.first_block.lock();
@@ -190,47 +246,32 @@ unsafe impl Allocator for LinkedListAllocator {
 
         // start of extension
         let new_start = unsafe { (previous as *mut BlockHdr).byte_add(previous.size) };
-        let new_start: VirtAddr = new_start.into();
-        assert!(new_start.0 % PAGE_SIZE == 0, "last block not ended on page boundary");
-        const { assert!(align_of::<BlockHdr>() <= PAGE_SIZE); }
+        let new_start = VirtAddr::from_mut_ptr(new_start).unwrap();
+        assert!(new_start.to_usize() % PAGE_SIZE == 0, "last block not ended on page boundary");
+        const { assert!(align_of::<BlockHdr>() <= PAGE_SIZE) };
         
         let pre_padding = BlockHdr::layout().padding_needed_for(layout.align());
         let post_padding = layout.padding_needed_for(BlockHdr::layout().align());
 
-        let previous = if previous.used {
+        let previous = if previous.is_used() {
             // last block is used: need to allocate a new one
-            let mut page_cnt = (BlockHdr::layout().size() + pre_padding + layout.size()).div_ceil(PAGE_SIZE);
+            let page_cnt = (BlockHdr::layout().size() + pre_padding + layout.size()).div_ceil(PAGE_SIZE);
             #[cfg(feature = "trace-malloc")]
             log::trace!("adding new free block of {} at {previous:?} {new_start:?}", ByteSize(page_cnt * PAGE_SIZE));
 
-            // the physical allocator may be unable to handle all of the pages once
-            // TODO: AddressSpaceGuard::allocate_range or sumn
-            let mut v_addr = new_start;
-            while page_cnt > 0 {
-                let mut guard = self.address_space.lock();
-                let mut modifier = guard.modify();
-                let pages = phys::allocate(page_cnt);
-                for p_addr in pages.iter() {
-                    modifier.map_range(v_addr, p_addr, 1, Default::default(), false).unwrap();
-                    #[cfg(feature = "trace-malloc")]
-                    log::trace!("map {v_addr:?} -> {p_addr:?}");
-                    page_cnt -= 1;
-                    v_addr = VirtAddr(v_addr.0 + PAGE_SIZE);
-                }
-                if pages.is_empty() {
-                    #[cfg(feature = "trace-malloc")]
-                    log::trace!("allocate({layout:?}) = no memory!");
-                    return Err(AllocError)
-                }
-            }
+            let blk_ptr = self.addr_space
+                .lock().as_mut().unwrap()
+                .modify()
+                .allocate_range(new_start, page_cnt, Default::default(), AllocReturn::Start)
+                .inspect_err(|err| log::error!("failed to add new block: {err:?}"))
+                .map_err(|_| AllocError)?
+                .to_mut_ptr();
 
-            // place block header
-            let blk_ptr: *mut BlockHdr = new_start.into();
             let blk_ref = unsafe {
                 // SAFETY: valid for write, aligned
                 *blk_ptr = BlockHdr {
-                    used: false,
-                    size: (v_addr - new_start).into(),
+                    signature: FREE_SIGNATURE,
+                    size: page_cnt * PAGE_SIZE,
                     next: None,
                 };
                 // SAFETY: just initialized the value
@@ -243,31 +284,18 @@ unsafe impl Allocator for LinkedListAllocator {
             // last block is free but small: need to extend it
             let target_size = BlockHdr::layout().size() + pre_padding + layout.size() + post_padding;
             let increase_by = target_size - previous.size;
-            let mut increase_by_pages = increase_by.div_ceil(PAGE_SIZE);
+            let increase_by_pages = increase_by.div_ceil(PAGE_SIZE);
             #[cfg(feature = "trace-malloc")]
             log::trace!("extending last block by {} pages from {} to {}", increase_by_pages, ByteSize(previous.size), ByteSize(target_size));
 
-            // the physical allocator may be unable to handle all of them at once
-            let mut v_addr = new_start;
-            while increase_by_pages > 0 {
-                let mut guard = self.address_space.lock();
-                let mut modifier = guard.modify();
-                let pages = phys::allocate(increase_by_pages);
-                for p_addr in pages.iter() {
-                    modifier.map_range(v_addr, p_addr, 1, Default::default(), false).unwrap();
-                    #[cfg(feature = "trace-malloc")]
-                    log::trace!("map {v_addr:?} -> {p_addr:?}");
-                    increase_by_pages -= 1;
-                    previous.size += PAGE_SIZE;
-                    v_addr = VirtAddr(v_addr.0 + PAGE_SIZE);
-                }
-                if pages.is_empty() {
-                    #[cfg(feature = "trace-malloc")]
-                    log::trace!("allocate({layout:?}) = no memory!");
-                    return Err(AllocError)
-                }
-            }
+            self.addr_space
+                .lock().as_mut().unwrap()
+                .modify()
+                .allocate_range(new_start, increase_by_pages, Default::default(), AllocReturn::Start)
+                .inspect_err(|err| log::error!("failed to add new block: {err:?}"))
+                .map_err(|_| AllocError)?;
 
+            previous.size += increase_by_pages * PAGE_SIZE;
             previous
         };
 
@@ -289,54 +317,31 @@ unsafe impl Allocator for LinkedListAllocator {
         let down_offs = (layout.align() as isize - blk_layout.align() as isize).max(blk_layout.size() as isize);
         let block = ptr.byte_sub(down_offs as usize).cast::<BlockHdr>().as_uninit_mut().assume_init_mut();
 
-        // free block
-        block.used = false;
-        // join next block if also free
-        match block.next {
-            None => (),
-            Some(ref mut next) => {
-                if !next.used {
-                    block.size += next.size;
-                    let next = next.next.take();
-                    block.next = next;
-                }
-            },
-        }
+        block.signature = FREE_SIGNATURE;
+        self.compact_free_blocks();
+
+        // TODO: return pages to physical allocator
+        // currently that's only done in `Drop` all at once
 
         #[cfg(feature = "trace-malloc")]
         log::trace!("{self:#?}");
     }
 }
 
-/// An allocator that becomes available halfway into the program
-struct LateAllocator<T: Allocator>(Option<T>);
-
-unsafe impl<T: Allocator> GlobalAlloc for LateAllocator<T> {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let allocator = self.0.as_ref().expect("LateAllocator invoked before it was initialized");
-        match allocator.allocate(layout) {
-            Err(_) => ptr::null_mut::<u8>(),
-            Ok(p) => p.as_mut_ptr(),
-        }
-    }
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        let allocator = self.0.as_ref().expect("LateAllocator invoked before it was initialized");
-        if let Some(ptr) = NonNull::new(ptr) {
-            allocator.deallocate(ptr, layout);
-        }
+impl Drop for LinkedListAllocator<'_> {
+    fn drop(&mut self) {
+        self.do_destroy();
     }
 }
 
 /// The default global allocator
 #[global_allocator]
-static mut ALLOCATOR: LateAllocator<LinkedListAllocator> = LateAllocator(None);
+static HEAP_ALLOCATOR: LateAllocator<LinkedListAllocator> = LateAllocator::new();
 
 /// Initializes the default global allocator
-/// 
-/// # Safety
-/// This function must only be called once
-pub unsafe fn initialize_default(addr_space: AddressSpace) {
-    let allocator = LinkedListAllocator::new(layout::EMULATOR_HEAP_BASE, addr_space)
+pub fn initialize_global_alloc(addr_space: AddrSpace<'static>) {
+    let allocator = LinkedListAllocator::new(addr_space)
         .expect("failed to create global allocator");
-    ALLOCATOR = LateAllocator(Some(allocator));
+    HEAP_ALLOCATOR.initialize(allocator);
 }
+

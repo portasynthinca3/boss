@@ -3,9 +3,9 @@
 //! These registers are mostly used for CPU configuration and thus are
 //! inherently unsafe.
 
-use core::arch::asm;
+#![allow(unused)]
 
-use num_enum::IntoPrimitive;
+use core::arch::asm;
 
 /// Trait for convenience enums which represent MSRs
 pub trait Msr: Sized + Into<u32> {
@@ -49,11 +49,18 @@ pub trait Msr: Sized + Into<u32> {
 /// The so-called "architectural" "model-specific" registers. They're not really
 /// model-specific, they're present on every CPU that this code can execute on.
 #[repr(u32)]
-#[derive(Clone, Copy, PartialEq, IntoPrimitive)]
+#[derive(Clone, Copy, PartialEq)]
 pub enum IA32Msr {
     /// `IA32_FS_BASE`: FS segment base address
     FsBase = 0xC000_0100,
     /// `IA32_GS_BASE`: GS segment base address
     GsBase = 0xC000_0101,
 }
+
+impl From<IA32Msr> for u32 {
+    fn from(value: IA32Msr) -> Self {
+        value as u32
+    }
+}
+
 impl Msr for IA32Msr { }

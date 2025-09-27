@@ -1,33 +1,43 @@
+//! BOSS Bootloader.
+//! 
+//! Decompresses the emulator executable image (Erlang VM implementation) and
+//! OS base image (Erlang code), then jumps to the emulator.
+
 #![no_main]
 #![no_std]
 
-use core::{arch::asm, panic::PanicInfo, slice};
+use core::{panic::PanicInfo, slice};
 use miniz_oxide::inflate::{self, TINFLStatus, core::inflate_flags::*};
-use uefi::{
-    prelude::*, table::{boot::{MemoryMap, MemoryType}, cfg::ACPI2_GUID},
-};
-use spin::Once;
+use spin::{Mutex, Once};
 
-use boss_common::{
-    target::{
-        memmgr::{
-            layout, phys, virt::{AddressSpace, TableAttrs}, MemMgrError, PhysAddr, VirtAddr, PAGE_SIZE
-        },
-        runtime_cfg,
-        glue::Glue,
-        hal::{video::Video, wall_clock},
+use boss_common::emu_params::EmuParams;
+
+use boss_common::target::{self, runtime_cfg};
+
+use boss_common::target::current::{
+    device::{
+        wall_clock::*,
     },
-    util::{byte_size::ByteSize, elf::{ElfFile, ElfLoadedProgramInfo}, serial_logger::SerialLogger},
+    memmgr::*,
+    cpu::*,
+    firmware::*,
 };
 
-#[cfg(not(test))]
+use boss_common::util::{
+    serial_logger::SerialLogger,
+    elf::{ElfFile, ElfLoadedProgramInfo},
+    byte_size::ByteSize,
+};
+
+pub mod boot;
+
 #[panic_handler]
 fn panic_handler(info: &PanicInfo) -> ! {
     log::error!("BOOT PANIC at {}:", info.location().unwrap().clone());
     log::error!("{}", info.message());
     log::error!("runtime_cfg: {:?}", runtime_cfg::get());
     loop {
-        unsafe { asm!("hlt"); }
+        Cpu::wait_for_interrupt();
     }
 }
 
@@ -37,44 +47,34 @@ enum ImageType {
     Data,
 }
 
-/// Where the ELF file will be decompressed to
-const EMULATOR_ELF_LOCATION: VirtAddr = VirtAddr::from_usize(0xffff_b000_0000_0000);
+const PAGE_SIZE: usize = MemoryParameters::PAGE_SIZE;
 
-/// Which images need to be decompressed and where
-const COMPRESSED_IMAGES: [(ImageType, VirtAddr, &[u8]); 2] = [
-    (
-        ImageType::ElfExecutable(layout::EMULATOR_IMG_BASE),
-        EMULATOR_ELF_LOCATION,
-        include_bytes!("../../.build/boss_emu.elf.zlib")
-    ),
-    (
-        ImageType::Data,
-        layout::BASE_IMG_BASE,
-        include_bytes!("../../.build/bosbaima.tar.zlib")
-    ),
-];
-
-/// Initializes the virtual memory manager by creating an address space from the UEFI mapping
-fn init_virt_memmgr(mem_map: &MemoryMap<'_>) -> Result<AddressSpace, MemMgrError> {
-    let mut addr_space = AddressSpace::new()?;
+/// Initializes the virtual memory manager by creating a new address space from
+/// the entire physical memory map
+fn init_virt_memmgr(
+    alloc: &Mutex<PhysAlloc>,
+    mem_map: impl Iterator<Item = PhysMemRange>
+) -> core::result::Result<AddrSpace, target::interface::memmgr::Error> {
+    let mut addr_space = AddrSpace::new(alloc)?;
     let mut guard = addr_space.modify();
-    for entry in mem_map.entries() {
-        if entry.ty == MemoryType::RESERVED { continue };
-        guard.map_range(
-            VirtAddr::from_usize(entry.phys_start as usize),
-            PhysAddr(entry.phys_start as usize),
-            entry.page_count as usize,
-            Default::default(),
-            false
-        )?;
-        guard.map_range(
-            VirtAddr::from_usize(entry.phys_start as usize) + layout::IDENTITY_BASE,
-            PhysAddr(entry.phys_start as usize),
-            entry.page_count as usize,
-            Default::default(),
-            false
-        )?;
+
+    let offsets = [
+        MemoryParameters::range(Region::NifOrIdentity).start().to_usize(),
+        MemoryParameters::range(Region::LinearPhysical).start().to_usize(),
+    ];
+
+    for entry in mem_map {
+        for offset in offsets {
+            guard.map_range(
+                VirtAddr::from_usize(entry.start.to_usize() + offset).unwrap(),
+                entry.start,
+                entry.page_count,
+                Default::default(),
+                AllocReturn::Start,
+            )?;
+        }
     }
+
     drop(guard);
     Ok(addr_space)
 }
@@ -82,28 +82,29 @@ fn init_virt_memmgr(mem_map: &MemoryMap<'_>) -> Result<AddressSpace, MemMgrError
 /// Decompresses an image at a fixed location in virtual memory
 fn decompress_image(
     mut compressed: &[u8],
-    addr_space: &mut AddressSpace,
-    attrs: TableAttrs,
-    destination: VirtAddr
+    addr_space: &mut AddrSpace,
+    access: Access,
+    destination: VirtAddr,
 ) -> &'static mut [u8] {
-    // We don't know the size of the inflated data; try exponentially larger buffers, then contract.
+    // We don't know the size of the inflated data;
+    // try exponentially larger buffers, then compact.
     let mut current_allocated_pages = 0;
 
     // SAFETY: although `destination` is invalid right now, the size is zero
-    let mut destination_buf = unsafe { slice::from_raw_parts_mut::<u8>(destination.into(), 0) };
+    let mut destination_buf = unsafe { slice::from_raw_parts_mut::<u8>(destination.to_mut_ptr(), 0) };
 
     let mut alloc_and_map_pages = |count: usize, total_allocated: &mut usize, buffer: &mut &mut [u8]| {
-        let dest_for_new_pages = destination + VirtAddr::from_usize(*total_allocated * PAGE_SIZE);
+        let dest_for_new_pages = VirtAddr::from_usize(destination.to_usize() + (*total_allocated * PAGE_SIZE)).unwrap();
         log::trace!("allocating {count} pages at {dest_for_new_pages:?}");
         let _ = addr_space
             .modify()
-            .allocate_range(dest_for_new_pages, count, attrs, false)
+            .allocate_range(dest_for_new_pages, count, access, AllocReturn::Start)
             .unwrap();
         *total_allocated += count;
 
         let total_size = *total_allocated * PAGE_SIZE;
         // SAFETY: there's memory at this address with exactly this many bytes allocated
-        *buffer = unsafe { slice::from_raw_parts_mut::<u8>(destination.into(), total_size) };
+        *buffer = unsafe { slice::from_raw_parts_mut::<u8>(destination.to_mut_ptr(), total_size) };
     };
 
     alloc_and_map_pages(1, &mut current_allocated_pages, &mut destination_buf);
@@ -120,7 +121,7 @@ fn decompress_image(
         match status {
             TINFLStatus::Done => break,
             TINFLStatus::HasMoreOutput => (),
-            _ => panic!(),
+            error => panic!("decompression error: {error:?}"),
         }
 
         compressed = &compressed[in_consumed..];
@@ -129,16 +130,16 @@ fn decompress_image(
 
     let decompressed_size = output_pos;
     // SAFETY: there's allocated memory at this address with at least this many bytes allocated
-    destination_buf = unsafe { slice::from_raw_parts_mut::<u8>(destination.into(), decompressed_size) };
+    destination_buf = unsafe { slice::from_raw_parts_mut(destination.to_mut_ptr(), decompressed_size) };
 
     // remove unneeded pages
     let size_in_pages = decompressed_size.div_ceil(PAGE_SIZE);
     if size_in_pages < current_allocated_pages {
         log::trace!("deallocating {} extra pages", current_allocated_pages - size_in_pages);
         addr_space.modify().deallocate_range(
-            destination + VirtAddr::from_usize(size_in_pages * PAGE_SIZE)
+            VirtAddr::from_usize(destination.to_usize() + (size_in_pages * PAGE_SIZE)).unwrap()
             ..=
-            destination + VirtAddr::from_usize((current_allocated_pages - 1) * PAGE_SIZE)
+            VirtAddr::from_usize(destination.to_usize() + ((current_allocated_pages - 1) * PAGE_SIZE)).unwrap()
         ).unwrap();
     }
 
@@ -146,33 +147,12 @@ fn decompress_image(
     destination_buf
 }
 
-fn run_executable(info: &ElfLoadedProgramInfo, stack_top: VirtAddr, glue: *const Glue) -> ! {
-    log::debug!("jumping to {:?} with stack={stack_top:?} glue={:#x}", info.entry_point, glue as usize);
-
-    let stack_top: usize = stack_top.into();
-    let entry_point: usize = info.entry_point.into();
-
-    unsafe {
-        asm!(
-            "mov rsp, {stack}",
-            "mov rbp, {stack}",
-            "push {jump_ptr}",
-            "ret",
-            stack = in(reg) stack_top,
-            jump_ptr = in(reg) entry_point,
-            in("rdi") glue,
-            options(noreturn),
-        );
-    }
-}
-
+static WALL_CLOCK: Once<WallClock> = Once::new();
 static LOGGER: Once<SerialLogger> = Once::new();
 
-/// Bootloader entry point
-#[cfg_attr(not(test), entry)]
-fn main(image_handle: Handle, system_table: SystemTable<Boot>) -> Status {
-    wall_clock::calibrate();
-    log::set_logger(LOGGER.call_once(|| SerialLogger::new(0))).unwrap();
+fn generic_entry(firmware: UninitializedFirmware) -> ! {
+    let wall_clock = WALL_CLOCK.call_once(WallClock::calibrate_new);
+    log::set_logger(LOGGER.call_once(|| SerialLogger::new(0, wall_clock))).unwrap();
 
     log::set_max_level(log::LevelFilter::Info);
     #[cfg(feature = "log-trace")]
@@ -180,34 +160,37 @@ fn main(image_handle: Handle, system_table: SystemTable<Boot>) -> Status {
 
     log::info!("boss_boot started");
 
-    let acpi_xsdp: VirtAddr = system_table
-        .config_table()
-        .iter()
-        .find(|entry| entry.guid == ACPI2_GUID)
-        .unwrap()
-        .address
-        .into();
-    let acpi_xsdp: PhysAddr = acpi_xsdp.into();
+    let mut firmware = firmware.init();
 
-    // video has to be initialized before exiting boot services
-    let video = Video::new(&system_table);
-
-    // initialize physical memory manager
-    let (_system_table, mem_map) = system_table.exit_boot_services(MemoryType::LOADER_DATA);
-    phys::init(&mem_map);
+    // initialize PMM
+    let usable_memory = firmware.get_memory().unwrap().filter(|r| r.usability == PhysMemUsability::Always);
+    let phys_alloc = Mutex::new(unsafe { PhysAlloc::new(usable_memory).unwrap() });
+    log::info!("available memory: {:?}", phys_alloc.lock().stats().total);
 
     // create new address space with the same mapping
-    let mut addr_space = init_virt_memmgr(&mem_map).unwrap();
-    // SAFETY: we've created a copy of the space we're running in, it's safe.
+    let mut addr_space = init_virt_memmgr(&phys_alloc, firmware.get_memory().unwrap()).unwrap();
     unsafe { addr_space.set_as_current() };
 
     let mut program_info: Option<ElfLoadedProgramInfo> = None;
     let mut data_image: Option<&[u8]> = None;
 
+    let compressed_images: [(ImageType, VirtAddr, &[u8]); 2] = [
+        (
+            ImageType::ElfExecutable(*MemoryParameters::range(Region::EmulatorImage).start()),
+            *MemoryParameters::range(Region::EmulatorHeap).start(),
+            include_bytes!("../../.build/boss_emu.elf.zlib"),
+        ),
+        (
+            ImageType::Data,
+            *MemoryParameters::range(Region::BaseImage).start(),
+            include_bytes!("../../.build/bosbaima.tar.zlib"),
+        ),
+    ];
+
     // decompress images
-    for (img_type, load_addr, compressed_data) in COMPRESSED_IMAGES.iter() {
-        let attrs = TableAttrs { execute: matches!(img_type, ImageType::ElfExecutable(_)), ..Default::default() };
-        let image = decompress_image(compressed_data, &mut addr_space, attrs, *load_addr);
+    for (img_type, load_addr, compressed_data) in compressed_images.iter() {
+        let access = Access { execute: matches!(img_type, ImageType::ElfExecutable(_)), ..Default::default() };
+        let image = decompress_image(compressed_data, &mut addr_space, access, *load_addr);
 
         if let ImageType::ElfExecutable(load_address) = img_type {
             let elf_file = ElfFile::new(image).unwrap();
@@ -217,39 +200,48 @@ fn main(image_handle: Handle, system_table: SystemTable<Boot>) -> Status {
 
             // unload now unneeded compressed image
             let (image_base, image_len) = (image.as_ptr(), image.len());
-            let image_base: VirtAddr = image_base.into();
-            addr_space.modify().deallocate_range(image_base ..= (image_base + VirtAddr::from_usize(image_len))).unwrap();
+            let image_base: VirtAddr = VirtAddr::from_ptr(image_base).unwrap();
+            addr_space.modify().deallocate_range(image_base ..= VirtAddr::from_usize(image_base.to_usize() + image_len - 1).unwrap()).unwrap();
         } else {
             data_image = Some(image);
         }
     }
 
-    let Some(program_info) = program_info else { panic!("no executable set") };
-    let Some(data_image) = data_image else { panic!("no data set") };
+    let program_info = program_info.unwrap();
+    let data_image = data_image.unwrap();
+    let data_image = (VirtAddr::from_ptr(data_image.as_ptr()).unwrap(), data_image.len());
 
     // allocate stack
+    let stack_range = MemoryParameters::range(Region::EmulatorStack);
+    let stack_pages = (stack_range.end().to_usize() - stack_range.start().to_usize()) / PAGE_SIZE;
     let stack_top = addr_space.modify().allocate_range(
-        layout::EMULATOR_STACK_BASE,
-        layout::EMULATOR_STK_PAGES,
-        TableAttrs { execute: false, ..Default::default() },
-        true
+        *stack_range.start(),
+        stack_pages,
+        Access { execute: false, ..Default::default() },
+        AllocReturn::End,
     ).unwrap();
 
     // compose parameters to pass to executable
-    let glue = Glue {
-        acpi_xsdp,
-        pmm_state: phys::export(),
-        video,
-        data_image,
-    };
-
-    let glue_size_pages = size_of::<Glue>().div_ceil(PAGE_SIZE);
-    let glue_location: *mut Glue = addr_space
+    let params_range = MemoryParameters::range(Region::EmuParams);
+    let params_location = addr_space
         .modify()
-        .allocate_range(layout::GLUE_BASE, glue_size_pages, TableAttrs { execute: false, ..Default::default() }, false)
+        .allocate_range(*params_range.start(), 1, Access { execute: false, ..Default::default() }, AllocReturn::Start)
         .unwrap()
-        .into();
-    unsafe { glue_location.write(glue) };
+        .to_mut_ptr::<u8>();
+    let params_slice = unsafe { core::slice::from_raw_parts_mut(params_location, PAGE_SIZE) };
+    let params = EmuParams {
+        firmware,
+        data_image,
+        phys_alloc: phys_alloc.into_inner(),
+        wall_clock: *wall_clock,
+    };
+    let params_len = bincode::encode_into_slice(params, params_slice, bincode::config::standard()).unwrap();
 
-    run_executable(&program_info, stack_top, glue_location);
+    log::debug!("jumping to {:?} stack={:?} params={:?} len={:?}", program_info.entry_point, stack_top, params_location, params_len);
+    unsafe {
+        Cpu::jump_to(program_info.entry_point, stack_top, &[
+            params_location as usize,
+            params_len
+        ]);
+    }
 }

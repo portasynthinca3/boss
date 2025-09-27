@@ -313,7 +313,7 @@ impl BeamInterpreter {
                 Err(Terminate::EnterWait)
             },
 
-            (Opcode::WaitTimeout, [Some(Operand::Label(cont)), Some(time), ..]) => {
+            (Opcode::WaitTimeout, [Some(Operand::Label(cont)), Some(_time), ..]) => {
                 self.state.loop_rec_ctr = 0;
                 self.state.ip.instruction = self.state.ip.module.labels[*cont];
                 Err(Terminate::EnterWait)

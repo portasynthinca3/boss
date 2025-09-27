@@ -1,8 +1,8 @@
 //! Read-only ELF file format parser and loader.
 
 use core::ops::Range;
-use crate::target::memmgr::{PAGE_SIZE, VirtAddr, virt::AddressSpace, MemMgrError};
-use strum_macros::FromRepr;
+use crate::target::current::memmgr::*;
+use strum::FromRepr;
 use super::cursor::Cursor;
 use super::from_null_term;
 
@@ -21,7 +21,7 @@ pub enum ElfError {
     UnsupportedArchitecture,
     BadVersion,
     UnsupportedAlignment,
-    MemMgr(MemMgrError),
+    MemMgr(Error),
     UnsupportedSection,
     StringError,
     UnexpectedEmptySection,
@@ -84,6 +84,8 @@ pub struct ElfLoadedProgramInfo {
     pub entry_point: VirtAddr,
     pub address_span: Range<VirtAddr>,
 }
+
+const PAGE_SIZE: usize = MemoryParameters::PAGE_SIZE;
 
 impl<'d> ElfFile<'d> {
     pub fn new(data: &'d [u8]) -> Result<ElfFile<'d>, ElfError> {
@@ -209,7 +211,7 @@ impl<'d> ElfFile<'d> {
 
     fn apply_relocations(&self, program: &mut [u8], rela_section: &[u8], addr: VirtAddr) -> Result<(), ElfError> {
         // assuming we're on x86_64
-        let addr: usize = addr.into();
+        let addr = addr.to_usize();
         let mut cursor = Cursor::new(rela_section);
         loop {
             let offset = cursor.read_u64_le() as usize;
@@ -228,10 +230,10 @@ impl<'d> ElfFile<'d> {
 
     pub fn load_program(
         &self,
-        addr_space: &mut AddressSpace,
+        addr_space: &mut AddrSpace,
         addr: VirtAddr
     ) -> Result<ElfLoadedProgramInfo, ElfError> {
-        let addr_num: usize = addr.into();
+        let addr_num = addr.to_usize();
         let mut guard = addr_space.modify();
         let mut space_allocated = 0usize;
         let mut next_alloc_at = addr;
@@ -245,17 +247,17 @@ impl<'d> ElfFile<'d> {
             let new_required_size = entry.virt_addr + entry.mem_size;
             if new_required_size > space_allocated {
                 let new_pages = new_required_size.div_ceil(PAGE_SIZE) - space_allocated.div_ceil(PAGE_SIZE);
-                guard.allocate_range(next_alloc_at, new_pages, Default::default(), false).map_err(ElfError::MemMgr)?;
+                guard.allocate_range(next_alloc_at, new_pages, Default::default(), AllocReturn::Start).map_err(ElfError::MemMgr)?;
                 space_allocated = new_required_size;
-                next_alloc_at += VirtAddr::from_usize(new_pages * PAGE_SIZE);
+                next_alloc_at = VirtAddr::from_usize(next_alloc_at.to_usize() + (new_pages * PAGE_SIZE)).unwrap();
             }
 
-            let load_addr = VirtAddr::from_usize(addr_num + entry.virt_addr);
-            let target = unsafe { core::slice::from_raw_parts_mut::<u8>(load_addr.into(), entry.data.len()) };
+            let load_addr = VirtAddr::from_usize(addr_num + entry.virt_addr).unwrap();
+            let target = unsafe { core::slice::from_raw_parts_mut::<u8>(load_addr.to_mut_ptr(), entry.data.len()) };
             target.copy_from_slice(entry.data);
         }
 
-        let program = unsafe { core::slice::from_raw_parts_mut::<u8>(addr.into(), space_allocated) };
+        let program = unsafe { core::slice::from_raw_parts_mut::<u8>(addr.to_mut_ptr(), space_allocated) };
 
         // apply relocations
         for index in 0 .. (self.section_table.len() / self.section_entry_size) {
@@ -272,7 +274,7 @@ impl<'d> ElfFile<'d> {
         }
 
         Ok(ElfLoadedProgramInfo {
-            entry_point: VirtAddr::from_usize(addr_num + self.entry_point),
+            entry_point: VirtAddr::from_usize(addr_num + self.entry_point).unwrap(),
             address_span: addr..next_alloc_at,
         })
     }

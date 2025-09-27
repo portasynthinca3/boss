@@ -3,7 +3,7 @@
 # =============
 
 boss_target := "x86_64-uefi"
-profile := "dev"
+profile := "release"
 boot_features := ","
 emu_features := ","
 
@@ -23,7 +23,7 @@ emu_target := if boss_target == "x86_64-uefi" {
     error("invalid boss_target")
 }
 
-profile_dir := if profile == "dev" { "debug" } else { "release" }
+profile_dir := if profile == "release" { "release" } else { "debug" }
 cargo_flags := "--profile " + profile
 export RUSTFLAGS := "--cfg boss_target=\"" + boss_target + "\""
 
@@ -80,13 +80,17 @@ iso: boot
     mcopy -i .build/boss.iso .build/boss_boot.efi ::/EFI/BOOT/BOOTX64.EFI
     mcopy -i .build/boss.iso .build/bosbaima.tar ::/BOSS/BOSBAIMA.TAR
 
-qemu_args := "-enable-kvm -drive if=pflash,format=raw,readonly=on,file=/usr/share/ovmf/x64/OVMF.4m.fd -device ahci,id=ahci -device ide-hd,drive=disk,bus=ahci.0 -drive if=none,id=disk,format=raw,file=.build/boss.iso -m 128 -smp 4,sockets=1,cores=2,threads=2 -boot menu=off,splash-time=0 -d int -D qemu.log"
+qemu_args := "-enable-kvm -drive if=pflash,format=raw,readonly=on,file=/usr/share/ovmf/x64/OVMF.4m.fd -device ahci,id=ahci -device ide-hd,drive=disk,bus=ahci.0 -drive if=none,id=disk,format=raw,file=.build/boss.iso -m 128 -smp 4,sockets=1,cores=2,threads=2 -boot menu=off,splash-time=0 -d int -D qemu.log -gdb tcp::1234"
 
 # Boot ISO in QEMU
 qemu: iso
-    qemu-system-x86_64 {{qemu_args}} -serial stdio -gdb tcp::1234
+    qemu-system-x86_64 {{qemu_args}} -serial stdio
 qemu_pause: iso
-    qemu-system-x86_64 {{qemu_args}} -serial stdio -gdb tcp::1234 -S
+    qemu-system-x86_64 {{qemu_args}} -serial stdio -S
+qemu_mon: iso
+    qemu-system-x86_64 {{qemu_args}} -monitor stdio
+qemu_hot:
+    qemu-system-x86_64 {{qemu_args}} -serial stdio
 
 gdb:
     rust-gdb

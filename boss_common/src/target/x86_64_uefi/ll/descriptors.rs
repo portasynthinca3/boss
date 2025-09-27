@@ -9,13 +9,18 @@
 //! a MSR somewhere.
 //! 
 //! I dunno, I love low-level dev, but this kind of stuff annoys and saddens me.
+//! 
+//! This implementation is what we call in Russian as "прибито гвоздями". It
+//! specifically does not set out to implement a flexible interface. It just
+//! needs to set up the goddamn structure once.
 
 use core::mem::size_of;
 use core::arch::asm;
 
 use bitfield_struct::bitfield;
 
-use super::memmgr::{phys, VirtAddr, PAGE_SIZE};
+use crate::target::current::memmgr::*;
+const PAGE_SIZE: usize = MemoryParameters::PAGE_SIZE;
 
 /// Basically a fat pointer to a descriptor table (GDT, LDT or IDT).
 #[bitfield(u128)]
@@ -37,7 +42,7 @@ pub enum DescTableKind {
 
 impl DescTableRegister {
     pub fn make(base: VirtAddr, limit: u16) -> DescTableRegister {
-        let base: usize = base.into();
+        let base: usize = base.to_usize();
         DescTableRegister::new().with_base(base as u64).with_limit(limit)
     }
     
@@ -48,9 +53,7 @@ impl DescTableRegister {
     /// layout. Don't use outside of this module.
     pub unsafe fn load(&self, kind: DescTableKind) {
         let address = self as *const Self as usize;
-        if address % 8 != 0 {
-            log::warn!("8-byte alignment is strongly recommended for performance");
-        }
+        assert!(address % 8 == 0);
         match kind {
             DescTableKind::Global => asm!("lgdt [{0}]", in(reg) address),
             DescTableKind::Local => asm!("lldt [{0}]", in(reg) address),
@@ -59,6 +62,7 @@ impl DescTableRegister {
     }
 }
 
+#[allow(unused)]
 pub enum SystemSegmentType {
     Ldt = 0b0010,
     TssAvailable = 0b1001,
@@ -111,11 +115,13 @@ const GDT_ENTRY_CNT: usize = 16; // really, 7 is enough.
 struct RawGdt(*mut [Descriptor; GDT_ENTRY_CNT]);
 
 impl RawGdt {
-    fn new() -> RawGdt {
+    fn new(addr_space: &mut AddrSpace) -> RawGdt {
         assert!(size_of::<[Descriptor; GDT_ENTRY_CNT]>() <= PAGE_SIZE);
-        let pages = phys::allocate(1);
-        let gdt: VirtAddr = pages[0].into();
-        let gdt: *mut [Descriptor; GDT_ENTRY_CNT] = gdt.into();
+        let gdt = addr_space
+            .modify()
+            .allocate_anywhere(1, Default::default(), AllocReturn::Start)
+            .unwrap()
+            .to_mut_ptr::<[Descriptor; GDT_ENTRY_CNT]>();
         RawGdt(gdt)
     }
 
@@ -148,17 +154,15 @@ pub struct CommonSelectors {
 }
 
 impl Gdt {
-    #[allow(clippy::new_without_default)]
-    pub fn new() -> Gdt {
-        Gdt(RawGdt::new())
+    pub fn new(addr_space: &mut AddrSpace) -> Gdt {
+        Gdt(RawGdt::new(addr_space))
     }
 
     /// Instructs the CPU to use this global descriptor table.
     /// # Safety
     /// It is unsafe for a table with unsound values to be loaded.
     pub unsafe fn set_as_current(&self) {
-        let addr: VirtAddr = self.0.0.into();
-        let addr: usize = addr.into();
+        let addr = VirtAddr::from_mut_ptr(self.0.0).unwrap().to_usize();
         let gdtr = DescTableRegister::new()
             .with_base(addr as u64)
             .with_limit((size_of::<[Descriptor; GDT_ENTRY_CNT]>() - 1) as u16);
@@ -167,10 +171,9 @@ impl Gdt {
 
     /// Allocates and selects a GDT with the standard selectors and returns
     /// them.
-    pub fn do_annoying_boilerplate_thing(tss: VirtAddr) -> CommonSelectors {
-        let tss: usize = tss.into();
-        let mut gdt = Self::new();
-        unsafe { gdt.set_as_current(); }
+    pub fn do_annoying_boilerplate_thing(addr_space: &mut AddrSpace, tss: VirtAddr) -> CommonSelectors {
+        let tss: usize = tss.to_usize();
+        let mut gdt = Self::new(addr_space);
 
         let generic_descriptor = Descriptor::new()
             .with_present(true)
@@ -225,8 +228,7 @@ impl Selector {
                 // perform far return, effectively loading new selector
                 "retfq",
                 in(reg) self.0,
-                out(reg) _,
-                /* out(reg) _ */),
+                out(reg) _,),
             SelectorRegister::Data => asm!("mov ds, {0:x}", in(reg) self.0),
             SelectorRegister::Stack => asm!("mov ss, {0:x}", in(reg) self.0),
         }

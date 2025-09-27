@@ -39,7 +39,7 @@
 //!     that the CPU expects to see;
 //!   - Raw: [`RawTable`] creates an unsafe abstraction over tables that has
 //!     some useful context not stored in the tables themselves;
-//!   - Public: [`AddressSpace`], [`SubSpace`] create a somewhat safe and
+//!   - Public: [`AddrSpace`], [`SubSpace`] create a somewhat safe and
 //!     nice-to-use abstraction over [`RawTable`]s.
 //! 
 //! For more information, refer to the Intel Software Developer's Manual. It's
@@ -49,20 +49,39 @@
 
 use core::{
     arch::asm,
+    cmp::Ordering,
     fmt::{self, Debug, Formatter},
-    marker::PhantomData,
     mem::size_of,
-    ops::{Range, RangeInclusive}
+    ops::{Deref, DerefMut, Range, RangeInclusive},
 };
 
+use alloc::borrow::ToOwned;
 use bitfield_struct::bitfield;
-use spin::{Mutex, MutexGuard, RwLock};
+use spin::Mutex;
 use strum::VariantArray;
 
 use crate::util::dyn_arr::DynArr;
-use super::{
-    phys, MemMgrError, VirtAddr, PhysAddr, PAGE_SIZE,
+
+use crate::target::interface::memmgr::{
+    PhysAddr as IfPhysAddr,
+    VirtAddr as IfVirtAddr,
+    PhysAlloc as IfPhysAlloc,
+    AddrSpace as IfAddrSpace,
+    AddrSpaceGuard as IfAddrSpaceGuard,
+    MemoryParameters as IfMemoryParameters,
+    Access,
+    AllocReturn,
+    Result,
+    Error,
 };
+use crate::target::current::memmgr::{
+    PhysAddr,
+    VirtAddr,
+    MemoryParameters,
+    PhysAlloc,
+};
+
+const PAGE_SIZE: usize = MemoryParameters::PAGE_SIZE;
 
 /// Entries per page table
 const ENTRY_CNT: usize = PAGE_SIZE / size_of::<u64>(); // 512
@@ -75,27 +94,9 @@ const INDEX_MASK: usize = (1 << BITS_PER_INDEX) - 1;
 /// Bit mask for offset into page in a virtual address
 const PAGE_OFFSET_MASK: usize = (1 << BITS_FOR_PAGE_OFFSET) - 1;
 
-/// Bits reserved for the subspace ID in each table entry
-const SUBSPACE_ID_LEN: usize = 2;
-/// Maximum subspaces available
-const MAX_SUBSPACES: usize = (1 << SUBSPACE_ID_LEN) - 1; // value 0 is reserved for "not a subspace"
-
-/// Subspaces are a way to safely share a subtree of an address space between
-/// multiple address spaces for efficiency reasons. This mechanism allows us,
-/// for example, to share the exact same upper half between all address spaces
-/// by simply having all appropriate PML4 entries pointing to the same PDPTs.
-pub struct SubSpace(usize);
-
-/// The global subspace registry. In order to prevent race conditions between
-/// threads that are trying to modify address spaces that share a subspace,
-/// every subspace is given a unique ID that is stored in the corresponding
-/// entry. This ID refers to a lock that is stored in this variable.
-static SUBSPACE_REGISTRY: [Mutex<()>; MAX_SUBSPACES] = [const { Mutex::new(()) }; MAX_SUBSPACES];
-static SUBSPACE_REGISTRY_SLOTS: RwLock<[bool; MAX_SUBSPACES]> = RwLock::new([false; MAX_SUBSPACES]);
-
 /// Used to represent entries of tables of all 4 levels.
 /// 
-/// For fields described below, UDD stands for Unless Disallowed DownstreamRwLock::new(Default::default())
+/// For fields described below, UDD stands for Unless Disallowed Downstream
 #[bitfield(u64, debug = false)]
 // `#[repr(transparent)]` is set by `bitfield`, so the implied transmutation
 // to/from `u64` in `RawTable` is safe
@@ -124,14 +125,8 @@ struct TableEntry {
     /// Upper 40 bits of the physical address
     #[bits(40)]
     addr: usize,
-    // FIXME: the following two hardcoded bit lengths should instead be based on
-    // `SUBSPACE_ID_LEN`. Unfortunately, `bitfield` does not seem to support
-    // expressions in the `bits` attribute
-    /// Subspace ID (ignored by the CPU)
-    #[bits(2)]
-    subspace_id: u16,
     /// Ignored
-    #[bits(9)]
+    #[bits(11)]
     _ign2: u16,
     /// XD: 0 = Execution allowed UDD, 1 = Execution disallowed
     exec_disable: bool,
@@ -142,11 +137,11 @@ impl Debug for TableEntry {
         if !self.present() {
             return write!(f, "0x---------------- present=false")
         }
-        write!(f, "{:?} write={} user={} cache={} accessed={} dirty={} global={} subspace={} xd={}",
+        write!(f, "{:?} write={} user={} cache={} accessed={} dirty={} global={} xd={}",
             PhysAddr(self.addr() << 12), self.write(), self.user(),
             self.cache_mode() | (self.cache_mode_2() << 2),
             self.accessed(), self.dirty(), self.global(),
-            self.subspace_id(), self.exec_disable())
+            self.exec_disable())
     }
 }
 
@@ -181,7 +176,7 @@ impl Debug for CR3 {
 /// Table attributes stored in the entries referencing those tables.
 /// 
 /// UDD = Unless Disallowed Downstream
-#[derive(PartialEq, Clone, Copy)]
+#[derive(PartialEq, Eq, Clone, Copy)]
 pub struct TableAttrs {
     /// 1 = Writes allowed UDD, 0 = Writes disallowed
     pub write: bool,
@@ -218,6 +213,16 @@ impl TableAttrs {
         }
     }
 
+    fn from_access(access: Access) -> Self {
+        Self {
+            write: access.write,
+            user: access.user,
+            cache: 0,
+            execute: access.execute,
+            global: false,
+        }
+    }
+
     fn write_to_entry(&self, entry: &mut TableEntry) {
         entry.set_present(true);
         entry.set_write(self.write);
@@ -239,7 +244,7 @@ impl TableAttrs {
 
 /// The four levels of tables and the end `Page`
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
-#[derive(strum_macros::VariantArray)]
+#[derive(strum::VariantArray)]
 pub enum TableKind {
     Page = 0,
     Pt = 1,
@@ -264,9 +269,9 @@ impl TableKind {
     }
 
     /// Extracts the entry index that this table kind would use
-    const fn entry_idx(&self, addr: VirtAddr) -> Option<usize> {
-        let Some(idx) = self.index_at() else { return None };
-        Some((addr.0 >> idx) & INDEX_MASK)
+    fn entry_idx(&self, addr: VirtAddr) -> Option<usize> {
+        let idx = self.index_at()?;
+        Some((addr.to_usize() >> idx) & INDEX_MASK)
     }
 
     /// Determines the table kind the entries of this kind reference
@@ -286,8 +291,10 @@ impl TableKind {
     }
 }
 
-/// Wrapper struct for `TableRef`s that has some additional context
-struct RawTable<'s> {
+/// Wrapper struct for a table pointer with some additional context not stored
+/// in the table itself
+#[derive(Eq)]
+struct RawTable {
     /// The first virtual address that this table handles
     lowest_addr: VirtAddr,
     /// Physical address of the page
@@ -298,17 +305,35 @@ struct RawTable<'s> {
     kind: TableKind,
     /// The attributes of this table
     attrs: TableAttrs,
-    /// Subspace lock guard and ID
-    subspace: Option<(MutexGuard<'s, ()>, u16)>,
 }
 
-impl<'s> RawTable<'s> {
+impl PartialEq for RawTable {
+    fn eq(&self, other: &Self) -> bool {
+        self.lowest_addr == other.lowest_addr &&
+        self.phys_addr == other.phys_addr &&
+        self.kind == other.kind &&
+        self.attrs == other.attrs
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum FreeMode {
+    TablesOnly,
+    TablesAndPages,
+}
+
+impl RawTable {
     /// Allocates a new table
-    fn new(kind: TableKind, lowest_addr: VirtAddr, attrs: TableAttrs) -> Result<RawTable<'s>, MemMgrError> {
+    fn new(
+        alloc: &mut impl IfPhysAlloc,
+        kind: TableKind,
+        lowest_addr: VirtAddr,
+        access: Access,
+    ) -> Result<Self> {
         // allocate page for table
-        let pages = phys::allocate(1);
-        if pages.is_empty() { return Err(MemMgrError::OutOfMemory); }
-        let page: VirtAddr = pages[0].into();
+        let p_page = alloc.allocate()?.next().ok_or(Error::OutOfMemory)?;
+        let v_page: VirtAddr = p_page.try_into()?;
+        unsafe { v_page.clear_page()? };
 
         // ensure that we've been given a viable starting address
         // it's valid only if all indices starting with the one that we're
@@ -320,34 +345,33 @@ impl<'s> RawTable<'s> {
             current_kind = next_kind;
         }
         // the page offset has to be zero too
-        valid &= lowest_addr.0 & PAGE_OFFSET_MASK == 0;
-        if !valid { return Err(MemMgrError::InvalidLowestAddr); }
+        valid &= lowest_addr.to_usize() & PAGE_OFFSET_MASK == 0;
+        if !valid { return Err(Error::MalformedAddress); }
 
         Ok(Self {
             lowest_addr,
-            phys_addr: pages[0],
-            entries: if kind == TableKind::Page { None } else { Some(page.into()) },
+            phys_addr: p_page,
+            entries: if kind == TableKind::Page { None } else { Some(v_page.to_mut_ptr()) },
             kind,
-            attrs,
-            subspace: None,
+            attrs: TableAttrs::from_access(access),
         })
     }
 
-    /// Deallocates a table
-    unsafe fn free(&mut self) -> Result<(), MemMgrError> {
-        let mut pages = DynArr::<PhysAddr>::new();
-        pages.push(self.phys_addr).unwrap();
-        match phys::deallocate(pages) {
-            Ok(()) => Ok(()),
-            Err(_) => Err(MemMgrError::UnrecognizedDealloc),
+    /// Deallocates a table and its descendants
+    unsafe fn free(&mut self, alloc: &mut impl IfPhysAlloc, mode: FreeMode) -> Result<()> {
+        if mode == FreeMode::TablesOnly && self.kind == TableKind::Page { return Ok(()) };
+        for i in 0..ENTRY_CNT {
+            if let Some(mut ds) = self.get_downstream_by_idx(i) {
+                ds.free(alloc, mode)?;
+            }
         }
+        alloc.deallocate(core::iter::once(self.phys_addr))
     }
 
     /// Returns an entry that can be used to reference this table
     fn to_parent_entry(&self) -> TableEntry {
         let mut entry = TableEntry::new()
-            .with_addr(self.phys_addr.0 >> 12)
-            .with_subspace_id(self.subspace.as_ref().map_or(0, |(_, id)| *id))
+            .with_addr(self.phys_addr.to_usize() >> 12)
             .with_present(true);
         self.attrs.write_to_entry(&mut entry);
         entry
@@ -355,42 +379,32 @@ impl<'s> RawTable<'s> {
 
     /// Gets a downstream table by its entry index. Returns None if the table
     /// cannot have children or if the entry is not present.
-    unsafe fn get_downstream_by_idx(&self, idx: usize) -> Option<RawTable<'s>> {
+    unsafe fn get_downstream_by_idx(&self, idx: usize) -> Option<Self> {
         // check entry presence
         let entry: TableEntry = (*self.entries?)[idx];
         if !entry.present() { return None; }
         let ds_kind = self.kind.downstream()?; // this also ensures that we can have children
 
-        // acquire subspace lock if present
-        let subspace = if entry.subspace_id() > 0 {
-            let id = entry.subspace_id() - 1;
-            let mutex = &SUBSPACE_REGISTRY[id as usize];
-            Some((mutex.lock(), id))
-        } else {
-            None
-        };
-
         // return table
         let phys_addr = PhysAddr(entry.addr() << 12);
-        let virt_addr: VirtAddr = phys_addr.into();
-        let entries = if ds_kind == TableKind::Page { None } else { Some(virt_addr.into()) };
+        let virt_addr: VirtAddr = phys_addr.try_into().unwrap();
+        let entries = if ds_kind == TableKind::Page { None } else { Some(virt_addr.to_mut_ptr()) };
         Some(Self {
-            lowest_addr: VirtAddr::from_usize(self.lowest_addr.0 | (idx << self.kind.index_at().unwrap())),
+            lowest_addr: VirtAddr::from_usize(self.lowest_addr.to_usize() | (idx << self.kind.index_at().unwrap())).unwrap(),
             phys_addr,
             entries,
             kind: ds_kind,
             attrs: TableAttrs::from_entry(&entry),
-            subspace,
         })
     }
     
     /// Sets a reference to a downstream table by its entry index. Returns an
     /// error if the table cannot have children or if an incorrect kind was
     /// supplied.
-    unsafe fn set_downstream_by_idx(&mut self, idx: usize, table: Option<&mut RawTable>) -> Result<(), ()> {
+    unsafe fn set_downstream_by_idx(&mut self, idx: usize, table: Option<&RawTable>) -> Result<()> {
         // ensure that we can have children
-        let ds_kind = self.kind.downstream().ok_or(())?;
-        let Some(entries) = self.entries else { return Err(()) };
+        let ds_kind = self.kind.downstream().ok_or(Error::UnknownPlatformSpecific)?;
+        let Some(entries) = self.entries else { return Err(Error::UnknownPlatformSpecific) };
 
         // check if None was supplied
         let Some(table) = table else {
@@ -399,7 +413,7 @@ impl<'s> RawTable<'s> {
         };
 
         // check kinds
-        if table.kind != ds_kind { return Err(()) }
+        if table.kind != ds_kind { return Err(Error::UnknownPlatformSpecific) }
 
         // set entry
         (*entries)[idx] = table.to_parent_entry();
@@ -410,14 +424,15 @@ impl<'s> RawTable<'s> {
     fn highest_addr(&self) -> VirtAddr {
         // sets all indices in the address that correspond to the current and
         // all downstream kinds to their highest value
-        let mut highest_addr = self.lowest_addr;
+        let mut highest_addr = self.lowest_addr.to_usize();
         let mut current_kind = self.kind;
         while let Some(next_kind) = current_kind.downstream() {
-            highest_addr = VirtAddr::from_usize(highest_addr.0 | (INDEX_MASK << current_kind.index_at().unwrap()));
+            highest_addr |= INDEX_MASK << current_kind.index_at().unwrap();
             current_kind = next_kind;
         }
-        highest_addr.0 |= PAGE_OFFSET_MASK;
-        highest_addr
+        highest_addr |= PAGE_OFFSET_MASK;
+        if (highest_addr >> 47) & 1 == 1 { highest_addr |= 0xffff_0000_0000_0000 };
+        VirtAddr::from_usize(highest_addr).unwrap()
     }
 
     /// Given a range of virtual addresses, returns the indices of entries in
@@ -429,14 +444,13 @@ impl<'s> RawTable<'s> {
     /// consist of three parts: 2 bits for the PDE index, 2 bits for the PTE
     /// index and n bits for an index into the page, but we will skip it as it's
     /// of no interest to us. Suppose also that we want to map the virtual
-    /// address range `0b0101 ..= 0b1010` (the last part of each bound is
-    /// omitted).
+    /// address range `0b0101 ..= 0b1010` (the index into the page is omitted).
     /// 
     /// In this address range, there are 6 pages that we need to map: `0b0101`,
     /// `0b0110`, `0b0111`, `0b1000`, `0b1001` and `0b1010`. In the following
-    /// diagram table entries of interest to this mapping operation are marked
+    /// diagram, table entries of interest to this mapping operation are marked
     /// with an X:
-    /// ```
+    /// ```diagram
     ///       PD                     PT                   Pages
     ///                                        +----->+------------+
     ///                                        |      |            |
@@ -486,14 +500,14 @@ impl<'s> RawTable<'s> {
         // the input range may not be fully contained within our range,
         // it might start before us
         let low_idx = if responsible_for.contains(addresses.start()) {
-            self.kind.entry_idx(*addresses.start()).expect("we ensured that we're not a TableKind::Page, but TableKind::entry_idx is None")
+            self.kind.entry_idx(*addresses.start()).unwrap(/* we've ensured that we're not a TableKind::Page, but TableKind::entry_idx is None */)
         } else {
             0
         };
 
         // similarly, it might end after us
         let high_idx = if responsible_for.contains(addresses.end()) {
-            self.kind.entry_idx(*addresses.end()).expect("we ensured that we're not a TableKind::Page, but TableKind::entry_idx is None")
+            self.kind.entry_idx(*addresses.end()).unwrap(/* same cause */)
         } else {
             INDEX_MASK // the mask is coincidentally the highest possible index
         };
@@ -502,7 +516,7 @@ impl<'s> RawTable<'s> {
     }
 }
 
-impl Debug for RawTable<'_> {
+impl Debug for RawTable {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{:?} at {:?} ({:?} through {:?})", self.kind, self.phys_addr,
             self.lowest_addr, self.highest_addr())?;
@@ -522,77 +536,22 @@ impl Debug for RawTable<'_> {
     }
 }
 
-/// TLB-aware wrapper for operations on address spaces.
-/// 
-/// TLB stands for Translation Lookaside Buffer and is basically a special kind
-/// of cache that stores virtual-to-physical mappings. If the address space that
-/// is being modified is active, the CPU has to be explicitly notified of these
-/// changes - it is not a transparent cache.
-/// 
-/// The `modify()` method of this struct returns a guard that guarantees that
-/// the CPU will be aware of all changes applied over the lifetime of that guard
-/// once it's dropped, but it does _not_ guarantee that the CPU won't become
-/// aware of them on its own, before the guard is dropped.
-#[derive(PartialEq, Eq)]
-pub struct AddressSpace {
+const MAX_RANGES: usize = 4;
+
+pub struct AddrSpace<'alloc> {
+    /// The entire address space, not just the portion that we handle
     cr3: CR3,
+    /// The ranges that we're responsible for
+    ranges: [Option<RangeInclusive<VirtAddr>>; MAX_RANGES],
+    /// Physical memory allocator
+    alloc: &'alloc Mutex<PhysAlloc>,
 }
 
-impl AddressSpace {
-    /// Gets the current address space from the `CR3` register of the CPU.
-    /// 
-    /// # Safety
-    /// Ensure that there is only one `AddressSpace` wrapper per CR3 value,
-    /// otherwise TLB consistency is not guaranteed.
-    pub unsafe fn get_current() -> AddressSpace {
-        let mut cr3: u64;
-        asm!("mov {cr3}, cr3", cr3 = out(reg) cr3);
-        AddressSpace { cr3: cr3.into() }
-    }
-
-    /// Switches to an address space, consuming the wrapper.
-    /// 
-    /// # Safety
-    /// Safe if:
-    ///   - only safe modifications of the address space have been applied, and
-    ///   - there are no undropped guards belonging to any address space.
-    /// 
-    /// If the second point is violated, the TLB may become inconsistent.
-    pub unsafe fn set_as_current(&self) {
-        let cr3: u64 = self.cr3.into();
-        asm!("mov cr3, {cr3}", cr3 = in(reg) cr3);
-    }
-
-    /// Creates a new empty address space
-    pub fn new() -> Result<AddressSpace, MemMgrError> {
-        let table = RawTable::new(TableKind::Pml4, VirtAddr::from_usize(0), Default::default())?;
-        Ok(AddressSpace {
-            cr3: CR3::new().with_addr(table.phys_addr.0 >> BITS_FOR_PAGE_OFFSET),
-        })
-    }
-
-    /// Determines whether the address space is active.
-    pub fn is_current(&self) -> bool {
-        *self == unsafe { Self::get_current() }
-    }
-
-    /// Creates a guard that can be used to modify the address space. When this
-    /// guard is dropped, all changes made during its lifetime will be committed
-    /// to the TLB.
-    pub fn modify<'guard, 'r: 'guard>(&'r mut self) -> AddressSpaceGuard<'guard, 'r> {
-        AddressSpaceGuard {
-            phantom: PhantomData,
-            active: self.is_current(),
-            space: self,
-            buffer: Default::default(),
-            overflow: false,
-        }
-    }
-
+impl<'alloc> AddrSpace<'alloc> {
     /// Iterates over all tables involved in the translation of the supplied
     /// address range. For every table that's at least partially responsible for
     /// translating any address in the given range (except the PML4) this method
-    /// calls the supplied function with:
+    /// calls the supplied closure with:
     ///   - a reference to the table currently under consideration (could be
     ///     None);
     ///   - the kind that the table under consideration should be of;
@@ -601,19 +560,21 @@ impl AddressSpace {
     fn iterate_over_range(
         &self,
         addresses: RangeInclusive<VirtAddr>,
-        mut callback: impl FnMut(&Option<RawTable<'_>>, TableKind, VirtAddr)
-    ) {
+        mut callback: impl FnMut(&Option<RawTable>, TableKind, VirtAddr)
+    ) -> Result<()> {
+        if !self.does_handle_range(&addresses) { return Err(Error::AddressNotHandledBySpace) };
+
         fn iterate_table(
-            table: &RawTable<'_>,
+            table: &RawTable,
             addresses: RangeInclusive<VirtAddr>,
-            callback: &mut impl FnMut(&Option<RawTable<'_>>, TableKind, VirtAddr)
+            callback: &mut impl FnMut(&Option<RawTable>, TableKind, VirtAddr)
         ) {
             if table.kind.downstream().is_some() { // ensure that we can have children
                 for i in table.downstream_idx_range(addresses.clone()).unwrap() {
                     let downstream = unsafe { table.get_downstream_by_idx(i) };
 
                     // call callback
-                    let ds_low_addr = VirtAddr::from_usize(table.lowest_addr.0 | (i << table.kind.index_at().unwrap()));
+                    let ds_low_addr = VirtAddr::from_usize(table.lowest_addr.to_usize() | (i << table.kind.index_at().unwrap())).unwrap();
                     callback(&downstream, table.kind.downstream().unwrap(), ds_low_addr);
 
                     // iterate over child
@@ -625,69 +586,251 @@ impl AddressSpace {
         }
 
         let root = self.root();
-        iterate_table(&root, addresses, &mut callback)
+        iterate_table(&root, addresses, &mut callback);
+        Ok(())
     }
 
     /// Returns the root PML4 table of the address space.
-    fn root<'b>(&self) -> RawTable<'b> {
+    fn root(&self) -> RawTable {
         let attrs = TableAttrs { cache: self.cr3.cache_mode(), ..Default::default() };
         let phys_addr = PhysAddr(self.cr3.addr() << BITS_FOR_PAGE_OFFSET);
-        let pml4_addr: VirtAddr = phys_addr.into();
+        let pml4_addr: VirtAddr = phys_addr.try_into().unwrap();
         RawTable {
             attrs,
             phys_addr,
-            entries: Some(pml4_addr.into()),
-            lowest_addr: VirtAddr::from_usize(0),
+            entries: Some(pml4_addr.to_mut_ptr()),
+            lowest_addr: VirtAddr::from_usize(0).unwrap(),
             kind: TableKind::Pml4,
-            subspace: None,
+        }
+    }
+
+    /// Returns a slice of ranges that covers the entire address space
+    fn get_full_space() -> [Option<RangeInclusive<VirtAddr>>; MAX_RANGES] {
+        let mut ranges = [const { None }; MAX_RANGES];
+        ranges[0] = Some(VirtAddr::from_usize(0x0000_0000_0000_0000).unwrap() ..= VirtAddr::from_usize(0x0000_7fff_ffff_ffff).unwrap());
+        ranges[1] = Some(VirtAddr::from_usize(0xffff_8000_0000_0000).unwrap() ..= VirtAddr::from_usize(0xffff_ffff_ffff_ffff).unwrap());
+        ranges
+    }
+
+    fn sort_ranges(&mut self) {
+        self.ranges
+            .sort_by(|a, b| match (a, b) {
+                (Some(a), Some(b)) => a.start().cmp(b.start()),
+                (None, Some(_)) => Ordering::Greater,
+                (Some(_), None) => Ordering::Less,
+                _ => Ordering::Equal,
+            });
+    }
+
+    /// Normalizes the list of ranges, i.e. ensures that:
+    ///   - all `None`s are placed at the end
+    ///   - neighboring ranges are merged
+    ///   - the ranges are sorted
+    fn normalize_ranges(&mut self) {
+        self.sort_ranges();
+
+        // merge neighboring ranges
+        for i in 0 .. (MAX_RANGES - 1) {
+            let (a, b) = self.ranges.split_at_mut(i + 1);
+            let a = &mut a[i];
+            let b = &mut b[0];
+
+            let (Some(a_range), Some(b_range)) = (a.to_owned(), b.to_owned()) else { continue };
+            assert!(a_range.end() < b_range.start());
+
+            if a_range.end().to_usize() + 1 == b_range.start().to_usize() {
+                *a = Some(a_range.start().to_owned() ..= b_range.end().to_owned());
+                *b = None;
+            }
+        }
+
+        self.sort_ranges();
+    }
+
+    fn insert_range(&mut self, range: RangeInclusive<VirtAddr>) -> Result<()> {
+        let slot = self
+            .ranges
+            .iter_mut()
+            .find(|x| x.is_none())
+            .ok_or(Error::TooManyRanges)?;
+        *slot = Some(range);
+        Ok(())
+    }
+}
+
+impl<'alloc> IfAddrSpace<'alloc> for AddrSpace<'alloc> {
+    const MAX_RANGES: usize = MAX_RANGES;
+
+    unsafe fn get_current(alloc: &'alloc Mutex<PhysAlloc>) -> Self {
+        let mut cr3: u64;
+        asm!("mov {cr3}, cr3", cr3 = out(reg) cr3);
+        Self {
+            cr3: cr3.into(),
+            ranges: Self::get_full_space(),
+            alloc,
+        }
+    }
+
+    unsafe fn set_as_current(&mut self) {
+        let cr3: u64 = self.cr3.into();
+        asm!("mov cr3, {cr3}", cr3 = in(reg) cr3);
+    }
+
+    fn is_current(&self) -> bool {
+        let mut cr3: u64;
+        unsafe { asm!("mov {cr3}, cr3", cr3 = out(reg) cr3) };
+        cr3 == self.cr3.into()
+    }
+
+    /// Creates a new empty address space
+    fn new(alloc: &'alloc Mutex<PhysAlloc>) -> Result<Self> {
+        let table = RawTable::new(alloc.lock().deref_mut(), TableKind::Pml4, VirtAddr::from_usize(0).unwrap(), Default::default())?;
+        Ok(Self {
+            cr3: CR3::new().with_addr(table.phys_addr.to_usize() >> BITS_FOR_PAGE_OFFSET),
+            ranges: Self::get_full_space(),
+            alloc,
+        })
+    }
+
+    fn ranges(&self) -> impl Iterator<Item = RangeInclusive<VirtAddr>> {
+        self.ranges
+            .iter()
+            .filter_map(|x| x.to_owned())
+    }
+
+    fn does_handle_range(&self, range: &RangeInclusive<VirtAddr>) -> bool {
+        self.ranges()
+            .any(|r| range.start() >= r.start() && range.end() <= r.end())
+    }
+
+    fn take_portion(&mut self, request: &RangeInclusive<VirtAddr>) -> Result<Self> {
+        let start = request.start().to_usize();
+        let end = request.end().to_usize();
+        if start & PAGE_OFFSET_MASK != 0 { return Err(Error::InvalidAddrRange) };
+        if end & PAGE_OFFSET_MASK != PAGE_OFFSET_MASK { return Err(Error::InvalidAddrRange) };
+
+        let next_page = VirtAddr::from_usize(end + 1).unwrap();
+        let last_b_of_prev_page = VirtAddr::from_usize(start - 1).unwrap();
+
+        let (index_to_replace, in_place_replacement, new_entry) = self
+            .ranges
+            .iter()
+            .enumerate()
+            .filter_map(|(i, x)| x.as_ref().map(|v| (i, v)))
+            .filter_map(|(i, slot)| {
+                if slot.start() <= request.start() && slot.end() >= request.end() {
+                    let (in_place_replacement, new_entry) = if slot.start() == request.start() {
+                        // Slot:       |-----------|
+                        // Request:    |-----|
+                        // Slot repl.:       |-----|
+                        // New slot:   None
+                        (next_page ..= slot.end().to_owned(), None)
+                    } else if slot.end() == request.end() {
+                        // Slot:       |-----------|
+                        // Request:         |------|
+                        // Slot repl.: |----|
+                        // New slot:   None
+                        (slot.start().to_owned() ..= last_b_of_prev_page, None)
+                    } else {
+                        // Slot:       |-----------|
+                        // Request:       |-----|
+                        // Slot repl.: |--|
+                        // New slot:            |--|
+                        (
+                            slot.start().to_owned() ..= last_b_of_prev_page,
+                            Some(request.end().to_owned() ..= slot.end().to_owned())
+                        )
+                    };
+                    Some((i, in_place_replacement, new_entry))
+                } else {
+                    None
+                }
+            })
+            .next()
+            .ok_or(Error::AddressNotHandledBySpace)?;
+
+        if let Some(new_entry) = new_entry {
+            self.insert_range(new_entry)?;
+        }
+        self.ranges[index_to_replace] = Some(in_place_replacement);
+        self.normalize_ranges();
+
+        let mut new_ranges = [const { None }; MAX_RANGES];
+        new_ranges[0] = Some(request.to_owned());
+
+        Ok(Self {
+            cr3: self.cr3,
+            ranges: new_ranges,
+            alloc: self.alloc,
+        })
+    }
+
+    fn merge_portion(&mut self, other: Self) -> Result<()> {
+        for range in other.ranges() {
+            self.insert_range(range)?;
+        }
+        self.normalize_ranges();
+        Ok(())
+    }
+
+    fn modify<'guard>(&'guard mut self) -> impl IfAddrSpaceGuard<'alloc> {
+        AddrSpaceGuard {
+            active: self.is_current(),
+            space: self,
+            buffer: Default::default(),
+            overflow: false,
         }
     }
 }
 
-impl Debug for AddressSpace {
+impl Debug for AddrSpace<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         writeln!(f, "{:?}: [", self.cr3)?;
 
-        let mut start_addr: Option<(VirtAddr, PhysAddr)> = None;
-        let mut last_addr: Option<VirtAddr> = None;
+        for range in self.ranges() {
+            writeln!(f, "\t{range:?}: [")?;
 
-        self.iterate_over_range(VirtAddr::from_usize(0)..=VirtAddr::from_usize(usize::MAX), |table, kind, addr| {
-            // writeln!(f, "{table:?}");
-            if kind != TableKind::Page || table.is_none() { return; }
-            if start_addr.is_none() {
-                start_addr = Some((addr, table.as_ref().unwrap().phys_addr));
-            }
-            // writeln!(f, "st={start_addr:?} la={last_addr:?} ad={addr:?}");
-            if let Some((start_virt, start_phys)) = start_addr && let Some(last) = last_addr && addr.0 - last.0 > PAGE_SIZE {
-                let pages = ((last_addr.unwrap().0 - start_virt.0) / PAGE_SIZE) + 1;
-                let _ = writeln!(f, "\t{:?}..{:?} -> {:?}..{:?}",
-                    start_virt, VirtAddr::from_usize(start_virt.0 + (pages * PAGE_SIZE)),
-                    start_phys, PhysAddr(start_phys.0 + (pages * PAGE_SIZE)));
-                start_addr = Some((addr, table.as_ref().unwrap().phys_addr));
-            }
-            last_addr = Some(addr);
-        });
+            let mut start_addr: Option<(VirtAddr, PhysAddr)> = None;
+            let mut last_addr: Option<VirtAddr> = None;
 
-        if let Some((start_virt, start_phys)) = start_addr {
-            let pages = ((last_addr.unwrap().0 - start_virt.0) / PAGE_SIZE) + 1;
-            writeln!(f, "\t{:?}..{:?} -> {:?}..{:?}",
-                start_virt, VirtAddr::from_usize(start_virt.0 + (pages * PAGE_SIZE)),
-                start_phys, PhysAddr(start_phys.0 + (pages * PAGE_SIZE)))?;
+            self.iterate_over_range(range, |table, kind, addr| {
+                // writeln!(f, "{table:?}");
+                if kind != TableKind::Page || table.is_none() { return; }
+                if start_addr.is_none() {
+                    start_addr = Some((addr, table.as_ref().unwrap().phys_addr));
+                }
+                // writeln!(f, "st={start_addr:?} la={last_addr:?} ad={addr:?}");
+                if let Some((start_virt, start_phys)) = start_addr && let Some(last) = last_addr && addr.to_usize() - last.to_usize() > PAGE_SIZE {
+                    let pages = ((last_addr.unwrap().to_usize() - start_virt.to_usize()) / PAGE_SIZE) + 1;
+                    let _ = writeln!(f, "\t\t{:?}..{:?} -> {:?}..{:?}",
+                        start_virt, VirtAddr::from_usize(start_virt.to_usize() + (pages * PAGE_SIZE)).unwrap(),
+                        start_phys, PhysAddr(start_phys.to_usize() + (pages * PAGE_SIZE)));
+                    start_addr = Some((addr, table.as_ref().unwrap().phys_addr));
+                }
+                last_addr = Some(addr);
+            }).unwrap();
+
+            if let Some((start_virt, start_phys)) = start_addr {
+                let pages = ((last_addr.unwrap().to_usize() - start_virt.to_usize()) / PAGE_SIZE) + 1;
+                writeln!(f, "\t\t{:?}..{:?} -> {:?}..{:?}",
+                    start_virt, VirtAddr::from_usize(start_virt.to_usize() + (pages * PAGE_SIZE)).unwrap(),
+                    start_phys, PhysAddr(start_phys.to_usize() + (pages * PAGE_SIZE)))?;
+            }
+            writeln!(f, "\t]")?;
         }
 
         write!(f, "]")
     }
 }
 
-/// Short-lived instance that depends on `AddressSpace` and collects
+/// Short-lived instance that depends on [`AddrSpace`] and collects
 /// modifications over its lifetime, committing changes to the TLB when it's
 /// dropped.
-pub struct AddressSpaceGuard<'guard, 'r: 'guard> {
-    phantom: PhantomData<&'guard ()>,
+pub struct AddrSpaceGuard<'guard, 'alloc: 'guard> {
     /// Whether the guard belongs to an active (i.e. current) address space
     active: bool,
     /// Reference to parent struct
-    space: &'r mut AddressSpace,
+    space: &'guard mut AddrSpace<'alloc>,
     /// List of pages that `invlpg` will be used on when the guard is dropped
     buffer: DynArr<VirtAddr>,
     /// If this is set to true, too many pages have been changed to fit into a
@@ -695,18 +838,27 @@ pub struct AddressSpaceGuard<'guard, 'r: 'guard> {
     overflow: bool,
 }
 
-impl<'guard, 'r> AddressSpaceGuard<'guard, 'r> {
-    fn remember(&mut self, addr: VirtAddr) {
-        if !self.active { return; }
-        if self.overflow { return; }
+#[derive(Debug, PartialEq, Eq)]
+enum TableOperation {
+    LeaveAsIs,
+    Free(FreeMode),
+    Replace(FreeMode, RawTable),
+}
+
+impl<'guard, 'alloc: 'guard> AddrSpaceGuard<'guard, 'alloc> {
+    fn mark_for_invalidation(&mut self, addr: VirtAddr) -> bool {
+        if !self.active { return false; }
+        if self.overflow { return false; }
         if self.buffer.push(addr).is_err() {
             self.overflow = true;
+            return false;
         }
+        true
     }
 
     /// Searches for a table of the given kind responsible for the given virtual
     /// address
-    fn get_table(origin: RawTable<'_>, addr: VirtAddr, kind: TableKind) -> RawTable<'_> {
+    fn get_table(origin: RawTable, addr: VirtAddr, kind: TableKind) -> RawTable {
         if origin.kind == kind { return origin; }
         let origin = unsafe { origin.get_downstream_by_idx(origin.kind.entry_idx(addr).unwrap()).unwrap() };
         Self::get_table(origin, addr, kind)
@@ -716,239 +868,194 @@ impl<'guard, 'r> AddressSpaceGuard<'guard, 'r> {
     /// address range. For every table that's at least partially responsible for
     /// translating any address in the given range (except the PML4) this method
     /// calls the supplied function with:
-    ///   - a mutable reference to the table currently under consideration
-    ///     (could be None);
+    ///   - a reference to the table currently under consideration (could be
+    ///     None);
     ///   - the kind that the table under consideration should be of;
     ///   - the first virtual address that the table under consideration should
     ///     be handling, even if the reference to it is `None`.
     /// 
-    /// The callback is expected to apply modifications to the table as it
-    /// desires. If must return a boolean that signals whether any changes were
-    /// made. Returning `false` when a change has been made is a logic error
-    /// that may leave the memory map in an inconsistent state.
+    /// The callback should return a [`TableOperation`] to perform, or an error
+    /// that will be immediately propagated.
     fn iterate_over_range_mut(
         &mut self,
         addresses: RangeInclusive<VirtAddr>,
-        mut callback: impl FnMut(&mut Option<RawTable<'_>>, TableKind, VirtAddr) -> bool,
-        mut deletion_callback: impl FnMut(&mut RawTable<'_>) -> bool
-    ) -> Result<(), MemMgrError> {
-        fn iterate_table(
-            guard: &mut AddressSpaceGuard<'_, '_>,
-            table: &mut RawTable<'_>,
-            addresses: RangeInclusive<VirtAddr>,
-            callback: &mut impl FnMut(&mut Option<RawTable<'_>>, TableKind, VirtAddr) -> bool,
-            deletion_callback: &mut impl FnMut(&mut RawTable<'_>) -> bool
-        ) -> Result<TableAttrs, MemMgrError> {
-            let mut most_permissive_attrs: TableAttrs = Default::default();
+        mut callback: impl FnMut(&Option<RawTable>, TableKind, VirtAddr) -> Result<TableOperation>
+    ) -> Result<()> {
+        if !self.space.does_handle_range(&addresses) { return Err(Error::AddressNotHandledBySpace) };
 
+        fn iterate_table(
+            guard: &mut AddrSpaceGuard<'_, '_>,
+            table: &mut RawTable,
+            addresses: RangeInclusive<VirtAddr>,
+            callback: &mut impl FnMut(&Option<RawTable>, TableKind, VirtAddr) -> Result<TableOperation>
+        ) -> Result<()> {
             if table.kind.downstream().is_some() { // ensure that we can have children
                 for i in table.downstream_idx_range(addresses.clone()).unwrap() {
-                    let mut downstream = unsafe { table.get_downstream_by_idx(i) };
-                    let original_address = downstream.as_ref().map(|t| t.phys_addr);
-                    let original_virt_addr = downstream.as_ref().map(|t| t.lowest_addr);
+                    let downstream = unsafe { table.get_downstream_by_idx(i) };
 
                     // call callback
-                    let ds_low_addr = VirtAddr::from_usize(table.lowest_addr.0 | (i << table.kind.index_at().unwrap()));
-                    let mut changes_applied = callback(&mut downstream, table.kind.downstream().unwrap(), ds_low_addr);
+                    let ds_low_addr = VirtAddr::from_usize(table.lowest_addr.to_usize() | (i << table.kind.index_at().unwrap())).unwrap();
+                    let operation = callback(&downstream, table.kind.downstream().unwrap(), ds_low_addr)?;
+                    // log::trace!("cb({:?}, {:?}, {:?}) = {:?}", downstream, table.kind.downstream().unwrap(), ds_low_addr, operation);
 
+                    // update entry
+                    let mut alloc = guard.space.alloc.lock();
+                    let mut downstream = match operation {
+                        TableOperation::LeaveAsIs => downstream,
+
+                        TableOperation::Free(mode) if let Some(mut ds) = downstream => {
+                            unsafe { ds.free(alloc.deref_mut(), mode)? };
+                            unsafe { table.set_downstream_by_idx(i, None)? };
+                            None
+                        },
+                        TableOperation::Free(_) /* if already None */ => panic!(),
+
+                        TableOperation::Replace(mode, new_ds) if let Some(mut ds) = downstream => {
+                            unsafe { ds.free(alloc.deref_mut(), mode)? };
+                            unsafe { table.set_downstream_by_idx(i, Some(&new_ds))? };
+                            Some(new_ds)
+                        },
+                        TableOperation::Replace(_, new_ds) /* if None */ => {
+                            unsafe { table.set_downstream_by_idx(i, Some(&new_ds))? };
+                            Some(new_ds)
+                        },
+                    };
+                    drop(alloc);
+
+                    // iterate over child
                     if let Some(ref mut ds) = downstream {
-                        // iterate over child
-                        let new_attrs = iterate_table(guard, ds, addresses.clone(), callback, deletion_callback)?;
-                        most_permissive_attrs.bubble_upstream(ds.attrs);
-                        most_permissive_attrs.bubble_upstream(new_attrs);
-
-                        // ask if should delete child
-                        let delete = deletion_callback(ds);
-
-                        if delete {
-                            unsafe { ds.phys_addr.clear_page().unwrap() }; // mark all entries as not present
-                            downstream = None;
-                            changes_applied = true;
-                        }
-                    }
-
-                    // update entry if table changed
-                    if changes_applied {
-                        table.attrs.bubble_upstream(most_permissive_attrs);
-                        unsafe { table.set_downstream_by_idx(i, downstream.as_mut()).unwrap() };
-                        // TLB awareness
-                        if let Some(address) = downstream.as_ref().map(|t| t.lowest_addr).or(original_virt_addr) {
-                            guard.remember(address);
-                        }
-                    }
-
-                    // deallocate old table
-                    let table_removed = changes_applied && original_address.is_some() && downstream.is_none();
-                    let address_changed = changes_applied
-                                       && original_address.is_some()
-                                       && downstream.as_ref().map(|t| t.phys_addr) != original_address;
-                    let is_end_page = downstream.as_ref().map(|t| t.kind) == Some(TableKind::Page);
-                    if (table_removed || address_changed) && !is_end_page {
-                        let mut pages = DynArr::<PhysAddr>::new();
-                        pages.push(original_address.unwrap()).unwrap();
-                        phys::deallocate(pages).or(Err(MemMgrError::UnrecognizedDealloc))?;
+                        iterate_table(guard, ds, addresses.clone(), callback)?;
                     }
                 }
             }
-
-            Ok(most_permissive_attrs)
+            Ok(())
         }
 
         let mut root = self.space.root();
-        iterate_table(self, &mut root, addresses, &mut callback, &mut deletion_callback).map(|_|())
-    }
+        iterate_table(self, &mut root, addresses.clone(), &mut callback)?;
 
-    /// Allocates consecutive virtual pages. If `return_end` is `true`, returns
-    /// the final byte of the range instead of the start (useful for stacks).
-    pub fn allocate_range(&mut self, start: VirtAddr, count: usize, attrs: TableAttrs, return_end: bool) -> Result<VirtAddr, MemMgrError> {
-        let end = VirtAddr::from_usize(start.0 + (count * PAGE_SIZE) - 1);
-        let mut error: Option<MemMgrError> = None;
-
-        self.iterate_over_range_mut(start..=end, |child, kind, low_addr| {
-            match *child {
-                Some(_) => false,
-                None => match RawTable::new(kind, low_addr, attrs) {
-                    Ok(tab) => { *child = Some(tab); true },
-                    Err(e) => { error = Some(e); false }
-                }
-            }
-        }, |_| false)?;
-
-        match error {
-            None => Ok(if return_end { VirtAddr::from_usize(end.0 + 1) } else { start }),
-            Some(e) => Err(e)
-        }
-    }
-
-    /// Maps consecutive virtual pages to consecutive physical pages. If
-    /// `return_end` is `true`, returns the final byte of the range instead of
-    /// the start (useful for stacks).
-    pub fn map_range(&mut self, start_virt: VirtAddr, start_phys: PhysAddr, count: usize, attrs: TableAttrs, return_end: bool) -> Result<VirtAddr, MemMgrError> {
-        let end_virt = VirtAddr::from_usize(start_virt.0 + (count * PAGE_SIZE) - 1);
-        let mut page_ctr = 0;
-        let mut error: Option<MemMgrError> = None;
-
-        self.iterate_over_range_mut(start_virt..=end_virt, |child, kind, low_addr| {
-            if kind == TableKind::Page {
-                assert_eq!(low_addr, VirtAddr::from_usize(start_virt.0 + (page_ctr * PAGE_SIZE))); // sanity check
-                // if considering an end page, force-assign a new physical address
-                *child = Some(RawTable {
-                    kind: TableKind::Page,
-                    lowest_addr: low_addr,
-                    phys_addr: PhysAddr(start_phys.0 + (page_ctr * PAGE_SIZE)),
-                    entries: None,
-                    attrs,
-                    subspace: None,
-                });
-                page_ctr += 1;
-                true
-            } else {
-                match *child {
-                    None => match RawTable::new(kind, low_addr, attrs) {
-                        Ok(tab) => { *child = Some(tab); true },
-                        Err(e) => { error = Some(e); false }
-                    }
-                    Some(_) => false
-                }
-            }
-        }, |_| false)?;
-
-        match error {
-            None => Ok(if return_end { VirtAddr::from_usize(end_virt.0 + 1) } else { start_virt }),
-            Some(e) => Err(e)
-        }
-    }
-
-    pub fn unmap_range(&mut self, range: RangeInclusive<VirtAddr>) -> Result<(), MemMgrError> {
-        self.iterate_over_range_mut(range.clone(), |_,_,_| false, |table| {
-            match table.downstream_idx_range(range.clone()) {
-                Some(idx_range) => *idx_range.start() == 0 && *idx_range.end() == INDEX_MASK,
-                None => false,
-            }
-        })
-    }
-
-    pub fn deallocate_range(&mut self, range: RangeInclusive<VirtAddr>) -> Result<(), MemMgrError> {
-        self.iterate_over_range_mut(range.clone(), |_,_,_| false, |table| {
-            match table.downstream_idx_range(range.clone()) {
-                Some(idx_range) => *idx_range.start() == 0 && *idx_range.end() == INDEX_MASK,
-                None => true,
-            }
-        })
-    }
-
-    /// Returns a subspace that can be shared with another address space
-    pub fn make_subspace(&mut self, range: RangeInclusive<VirtAddr>) -> Result<SubSpace, MemMgrError> {
-        // tests whether the given range would fully cover a table of the given kind
-        let is_valid_range = |mut kind: TableKind| {
-            let mut valid = true;
-            while let Some(next_kind) = kind.downstream() {
-                valid &= kind.entry_idx(*range.start()).unwrap() == 0;
-                valid &= kind.entry_idx(*range.end()).unwrap() == INDEX_MASK;
-                kind = next_kind;
-            }
-            valid &= range.start().0 & PAGE_OFFSET_MASK == 0;
-            valid &= range.end().0 & PAGE_OFFSET_MASK == PAGE_OFFSET_MASK;
-            valid
-        };
-
-        // determine the table that is to be shared
-        let mut kind: Option<TableKind> = None;
-        let mut current_kind = TableKind::Pml4;
-        while let Some(next_kind) = current_kind.downstream() {
-            if kind.is_none() && is_valid_range(current_kind) {
-                kind = Some(current_kind);
-            }
-            current_kind = next_kind;
+        let low = addresses.start().to_usize();
+        let high = addresses.end().to_usize();
+        for page in (low..=high).step_by(PAGE_SIZE) {
+            if !self.mark_for_invalidation(VirtAddr::from_usize(page).unwrap()) { break };
         }
 
-        // check for invalid values
-        let kind = match kind {
-            None => return Err(MemMgrError::InvalidAddrRange),
-            Some(TableKind::Pml4) => return Err(MemMgrError::InvalidAddrRange),
-            Some(kind) => kind,
-        };
-
-        // find unused mutex slot
-        let mut slot: Option<(usize, &Mutex<()>)> = None;
-        let mut guard = SUBSPACE_REGISTRY_SLOTS.write();
-        for (i, entry) in SUBSPACE_REGISTRY.iter().enumerate().take(MAX_SUBSPACES) {
-            if !(*guard)[i] {
-                (*guard)[i] = true;
-                slot = Some((i, entry));
-                break;
-            }
-        }
-        let (idx, lock) = match slot {
-            None => return Err(MemMgrError::MaxSubspacesReached),
-            Some(val) => val,
-        };
-
-        // write id to entry
-        let child_idx = kind.upstream().unwrap().entry_idx(*range.start()).unwrap();
-        let mut parent = Self::get_table(self.space.root(), *range.start(), kind.upstream().unwrap());
-        let mut child = unsafe { parent.get_downstream_by_idx(child_idx).unwrap() };
-        child.subspace = Some((lock.lock(), idx as u16));
-        unsafe { parent.set_downstream_by_idx(child_idx, Some(&mut child)).unwrap() };
-
-        Ok(SubSpace(idx))
-    }
-
-    /// TODO:
-    pub fn assign_subspace(&mut self, _sub: SubSpace) {
-        todo!()
+        Ok(())
     }
 }
 
-impl<'guard, 'wrap> Drop for AddressSpaceGuard<'guard, 'wrap> {
+impl<'guard, 'alloc: 'guard> IfAddrSpaceGuard<'alloc> for AddrSpaceGuard<'guard, 'alloc> {
+    fn allocate_range(
+        &mut self,
+        start: VirtAddr,
+        count: usize,
+        access: Access,
+        ret: AllocReturn
+    ) -> Result<VirtAddr> {
+        let end = VirtAddr::from_usize(start.to_usize() + (count * PAGE_SIZE) - 1).unwrap();
+
+        self.iterate_over_range_mut(start..=end, |child, kind, low_addr| {
+            match *child {
+                Some(_) => Ok(TableOperation::LeaveAsIs),
+                None => Ok(TableOperation::Replace(
+                    FreeMode::TablesAndPages,
+                    RawTable::new(self.space.alloc.lock().deref_mut(), kind, low_addr, access)?
+                ))
+            }
+        }).map(|_| if ret == AllocReturn::End {
+            VirtAddr::from_usize(end.to_usize() + 1).unwrap()
+        } else {
+            start
+        })
+    }
+
+    fn allocate_anywhere(
+        &mut self,
+        count: usize,
+        access: Access,
+        ret: AllocReturn
+    ) -> Result<VirtAddr> {
+        let phys_start = self.space.alloc.lock().allocate_contiguous(count)?;
+        self.map_range(phys_start.try_into()?, phys_start, count, access, ret)
+    }
+
+    fn map_range(
+        &mut self,
+        start_virt: VirtAddr,
+        start_phys: PhysAddr,
+        count: usize,
+        access: Access,
+        ret: AllocReturn
+    ) -> Result<VirtAddr> {
+        let end_virt = VirtAddr::from_usize(start_virt.to_usize() + (count * PAGE_SIZE) - 1).unwrap();
+        let mut page_ctr = 0;
+
+        self.iterate_over_range_mut(start_virt ..= end_virt, |child, kind, low_addr| {
+            match *child {
+                _ if kind == TableKind::Page => {
+                    page_ctr += 1;
+                    Ok(TableOperation::Replace(
+                        FreeMode::TablesOnly,
+                        RawTable {
+                            kind: TableKind::Page,
+                            lowest_addr: low_addr,
+                            phys_addr: PhysAddr(start_phys.to_usize() + ((page_ctr - 1) * PAGE_SIZE)),
+                            entries: None,
+                            attrs: TableAttrs::from_access(access),
+                        }
+                    ))
+                },
+                Some(_) => Ok(TableOperation::LeaveAsIs),
+                None => Ok(TableOperation::Replace(
+                    FreeMode::TablesOnly,
+                    RawTable::new(self.space.alloc.lock().deref_mut(), kind, low_addr, access)?
+                ))
+            }
+        }).map(|_| if ret == AllocReturn::End {
+            VirtAddr::from_usize(end_virt.to_usize() + 1).unwrap()
+        } else {
+            start_virt
+        })
+    }
+
+    fn deallocate_range(&mut self, range: RangeInclusive<VirtAddr>) -> Result<()> {
+        self.iterate_over_range_mut(range.clone(), |child, _kind, _low_addr| {
+            Ok(match *child {
+                Some(ref child) => {
+                    let table_range = child.lowest_addr ..= child.highest_addr();
+                    if table_range.start() >= range.start() && table_range.end() <= range.end() {
+                        TableOperation::Free(FreeMode::TablesAndPages)
+                    } else {
+                        TableOperation::LeaveAsIs
+                    }
+                },
+                None => TableOperation::LeaveAsIs,
+            })
+        })
+    }
+
+    fn unmap_range(&mut self, range: RangeInclusive<VirtAddr>) -> Result<()> {
+        self.iterate_over_range_mut(range.clone(), |child, _kind, _low_addr| {
+            Ok(match *child {
+                Some(ref child) => {
+                    let table_range = child.lowest_addr ..= child.highest_addr();
+                    if table_range.start() >= range.start() && table_range.end() <= range.end() {
+                        TableOperation::Free(FreeMode::TablesOnly)
+                    } else {
+                        TableOperation::LeaveAsIs
+                    }
+                },
+                None => TableOperation::LeaveAsIs,
+            })
+        })
+    }
+}
+
+impl<'guard, 'alloc> Drop for AddrSpaceGuard<'guard, 'alloc> {
     /// Commit all recorded changes to the TLB
     fn drop(&mut self) {
-        // if we're not modifying the active address space, there's nothing that
-        // we need to do
         if !self.active { return; }
 
-        // if the buffer has overflown, just set cr3 to itself, effectively
-        // flushing the whole TLB
         if self.overflow {
             unsafe {
                 asm!(
@@ -960,14 +1067,20 @@ impl<'guard, 'wrap> Drop for AddressSpaceGuard<'guard, 'wrap> {
             return;
         }
 
-        // apply `invlpg`
         for addr in self.buffer.iter() {
             unsafe {
                 asm!(
                     "invlpg [{ptr}]",
-                    ptr = in(reg) addr.0 as u64,
+                    ptr = in(reg) addr.to_usize() as u64,
                 );
             }
         }
+    }
+}
+
+impl<'guard, 'alloc> Deref for AddrSpaceGuard<'guard, 'alloc> {
+    type Target = AddrSpace<'alloc>;
+    fn deref(&self) -> &Self::Target {
+        self.space
     }
 }

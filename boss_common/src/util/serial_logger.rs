@@ -1,31 +1,34 @@
 use core::fmt::Write;
 use log::{Record, Level, Metadata};
 use spin::Mutex;
-use crate::target::hal::{serial::SerialPort, wall_clock::get_us_since_boot};
+use crate::target::interface::device::{serial::{Port as IfPort, PortWrite}, wall_clock::{Duration, WallClock as IfWallClock}};
+use crate::target::current::device::{serial::Port, wall_clock::WallClock};
 
-pub struct SerialLogger {
-    port: Mutex<SerialPort>,
+pub struct SerialLogger<'c> {
+    port: Mutex<PortWrite<Port>>,
+    clock: &'c WallClock,
 }
 
-impl SerialLogger {
-    pub fn new(port_number: usize) -> SerialLogger {
+impl SerialLogger<'_> {
+    pub fn new(port_number: usize, clock: &WallClock) -> SerialLogger {
         SerialLogger {
-            port: Mutex::new(SerialPort::new(port_number)),
+            port: Mutex::new(PortWrite(Port::new(port_number))),
+            clock,
         }
     }
 
     const fn get_level_string(level: Level) -> &'static str {
         match level {
-            Level::Error => "\x1b[31m err", // red
-            Level::Warn =>  "\x1b[33mwarn", // yellow
-            Level::Info =>  "\x1b[34minfo", // blue
-            Level::Debug => "\x1b[35mdebg", // magenta
-            Level::Trace => "\x1b[37mtrac", // white
+            Level::Error => "\x1b[31merr", // red
+            Level::Warn =>  "\x1b[33mwrn", // yellow
+            Level::Info =>  "\x1b[34mnfo", // blue
+            Level::Debug => "\x1b[35mdbg", // magenta
+            Level::Trace => "\x1b[37mtrc", // white
         }
     }
 }
 
-impl log::Log for SerialLogger {
+impl log::Log for SerialLogger<'_> {
     fn enabled(&self, _metadata: &Metadata) -> bool {
         true
     }
@@ -33,7 +36,7 @@ impl log::Log for SerialLogger {
     fn log(&self, record: &Record) {
         if self.enabled(record.metadata()) {
             // gather arguments
-            let time = get_us_since_boot(true);
+            let time = self.clock.abs_time().us();
             let sec = time / 1_000_000;
             let usec = time % 1_000_000;
             let level = Self::get_level_string(record.level());

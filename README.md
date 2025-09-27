@@ -7,15 +7,50 @@ system written in Erlang together with Rust. Its distinctive features include:
 
 ![BOSS printing Hello, World from Erlang](demo/helloworld.png)
 
-## Goals
-  - learn Rust;
-  - implement an Erlang VM;
-  - implement the dumbest idea that came to my head at 3 in the morning;
-  - have fun.
+## I wanna run it!
+Currently, the OS does not display anything on the screen. Instead, refer to
+output from the serial port. The [Just script](#build-using-just) instructs QEMU
+to redirect serial port output to the terminal.
 
-This project strives to achieve the following, in order of decreasing
-importance:
+### Download
+You can download an ISO built from the latest commit over on the
+[Releases](https://github.com/portasynthinca3/boss/releases) page. However, I
+suggest that you instead build the OS from scratch.
+
+### Build using Just
+Clone the project with:
+```shell
+$ git clone https://github.com/portasynthinca3/boss.git
+$ cd boss
+```
+
+To build an ISO, you will need:
+  - Just v1.x (tested with `1.33.0`)
+  - GNU MTools v4.x (tested with `4.0.44`)
+  - GNU binutils v2.x (tested with `2.42.0`)
+  - Rust v1.82-nightly (tested with `1.82.0-nightly (7120fdac7 2024-07-25)`)
+  - Erlang/OTP 28 (tested with `Erlang/OTP 28 [erts-16.0.1]`, 27 and below will
+    _not_ work)
+
+Build an ISO with:
+```shell
+$ just iso
+```
+
+To run the ISO in QEMU, you will need:
+  - All the other things needed for building an ISO
+  - QEMU
+  - OVMF (or other UEFI firmware for QEMU)
+
+Launch QEMU with:
+```shell
+$ just qemu
+```
+
+## Goals
+In order of decreasing importance:
   - have fun;
+  - implement an Erlang VM and an OS on top of that;
   - get the implementation to work;
   - make the implementation correct;
   - make the implementation fast.
@@ -139,64 +174,6 @@ Base image:
   - [ ] Hello, World!
   - [ ] A GUI, probably?
   - [ ] Other things
-
-## I wanna run it!!!!
-Currently, the OS does not display anything on the screen. Instead, refer to
-output from the serial port. [Nix](#build-using-nix) and
-[Just](#build-using-just) scripts instruct QEMU to redirect serial port output
-to the terminal.
-
-### Download
-You can download an ISO built from the latest commit over on the
-[Releases](https://github.com/portasynthinca3/boss/releases) page. However, I
-suggest that you instead build the OS from scratch.
-
-### Build using Nix
-Clone the project with:
-```shell
-$ git clone https://github.com/portasynthinca3/boss.git
-$ cd boss
-```
-
-Build an ISO with:
-```shell
-$ nix --extra-experimental-features flakes build .#iso
-```
-
-Launch in QEMU with:
-```shell
-$ nix --extra-experimental-features flakes --extra-experimental-features nix-command run
-```
-
-### Build using Just
-Clone the project with:
-```shell
-$ git clone https://github.com/portasynthinca3/boss.git
-$ cd boss
-```
-
-To build an ISO, you will need:
-  - Just v1.x (tested with `1.33.0`)
-  - GNU MTools v4.x (tested with `4.0.44`)
-  - GNU binutils v2.x (tested with `2.42.0`)
-  - Rust v1.82-nightly (tested with `1.82.0-nightly (7120fdac7 2024-07-25)`)
-  - Erlang/OTP 28 (tested with `Erlang/OTP 28 [erts-16.0.1]`, 27 and below will
-    _not_ work)
-
-Build an ISO with:
-```shell
-$ just iso
-```
-
-To run the ISO in QEMU, you will need:
-  - All the other things needed for building an ISO
-  - QEMU
-  - OVMF (or other UEFI firmware for QEMU)
-
-Launch QEMU with:
-```shell
-$ just qemu
-```
 
 ## Credits
 Thank you to (in no specific order):

@@ -14,7 +14,7 @@ bitflags! {
 
 static FLAGS: RwLock<CfgFlags> = RwLock::new(CfgFlags::empty());
 
-/// Sets one or multiple configuration flags. It is expected that 
+/// Sets one or multiple configuration flags
 pub fn set_flags(mask: CfgFlags, value: bool) {
     let mut guard = FLAGS.write();
     guard.set(mask, value);

@@ -14,6 +14,12 @@ rustflags = [
 
 [profile.release.build-override]
 opt-level = 3
+rustflags = [
+  "-Cembed-bitcode=no",
+  "-Crelocation-model=pie",
+  "-Cdebuginfo=2",
+  "-Zmacro-backtrace",
+]
 
 [unstable]
 build-std-features = ["compiler-builtins-mem"]

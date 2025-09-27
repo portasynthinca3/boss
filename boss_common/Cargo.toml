@@ -4,16 +4,16 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-bitfield-struct = "0.5.6"
-bitflags = "2.9.0"
-derive_more = "0.99.17"
+bitfield-struct = { workspace = true }
+bitflags = { workspace = true }
+derive_more = { workspace = true }
 log = { workspace = true }
-num_enum = { version = "0.7.2", default-features = false }
-spin = "0.9.8"
-strum = { version = "0.26", default-features = false }
-strum_macros = { version = "0.26", default-features = false }
+spin = { workspace = true }
+strum = { workspace = true }
 uefi = { workspace = true }
-hashbrown = "0.14"
+hashbrown = { workspace = true }
+bincode = { workspace = true }
+itertools = { workspace = true }
 
 [features]
 # Traces allocation and deallocation of pages by the physical memory manager

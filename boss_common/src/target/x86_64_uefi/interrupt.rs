@@ -28,59 +28,43 @@
 //! vector got invoked. Those stubs are called trampolines.
 //! 
 //! There are three layers to this implementation:
-//!   - Structural: [`ExecutionState`], [`IdtEntry`] and [`RawTss`] describe the
+//!   - Structural: [`CpuState`], [`IdtEntry`] and [`RawTss`] describe the
 //!     structure of the data that the CPU expects to see;
 //!   - Raw: [`RawIdt`], [`_intr_common_handler`], [`_intr_reg_wrapper`] and
 //!     [`make_trampoline`] create an unsafe abstraction over those raw
 //!     structures.
-//!   - Public: [`Manager`] exposes a somewhat safe and nice-to-use abstraction.
+//!   - Public: [`IntrMgr`] exposes a somewhat safe and nice-to-use abstraction.
 
+use core::fmt::{Debug, Formatter};
 use core::mem::size_of;
 use core::arch::{asm, naked_asm};
 
-use strum::VariantArray;
+use crate::target::current::{
+    ll::descriptors::*,
+    memmgr::*,
+};
+pub use crate::target::interface::interrupt::{
+    IntrVector,
+    AccessError,
+    ExceptionInfo,
+    IntrHandler,
+    Error,
+    Result,
+    CpuState as IfCpuState,
+    IntrMgr as IfIntrMgr,
+};
+
+use itertools::Either;
 use bitfield_struct::bitfield;
 
-use super::memmgr::{phys, PAGE_SIZE, VirtAddr, virt::{AddressSpace, TableAttrs}};
-use super::segment::*;
-use crate::util::boot_stage;
+pub const INTERRUPT_CNT: usize = 256;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Error {
-    TriedToInstallDoubleFault,
-}
-
-/// Disables interrupts. It is recommended to only keep them that way for a very
-/// short amount of time, enabling them back with [`enable_external`] as soon as
-/// possible.
-/// 
-/// Internal interrupts cannot be masked, and this function is not any more
-/// powerful than the CPU, so it does not do that.
-pub fn mask_external() {
-    unsafe { asm!("cli"); }
-}
-
-/// Enables interrupts after they have been disabled by [`mask_external`].
-pub fn enable_external() {
-    unsafe { asm!("sti"); }
-}
-
-/// There are 256 interrupt vectors on x86, but this implementation considers it
-/// unnecessary to support more than 128.
-pub const MAX_INTERRUPT_CNT: u8 = 128;
-
-/// The state that the CPU was in when it was interrupted. Contains:
-///   - General-purpose registers (`RAX`-`RDX`, `RSP`, `RBP`, `RSI`, `RDI`,
-///     `R8`-`R15`);
-///   - Segment registers (`CS`, `SS`);
-///   - Return pointer and flags (`RIP`, `RFLAGS`);
-///   - The vector number, error code (only useful in the case of some
-///     exceptions), and pointer to the handler function.
 // FIXME: currently SIMD registers are not saved.
 #[repr(C)]
 #[derive(Clone)]
-pub struct ExecutionState {
+pub struct CpuState {
     // pushed by _intr_reg_wrapper:
+    pub ds: u64, pub cr2: u64,
     pub r15: u64, pub r14: u64, pub r13: u64, pub r12: u64,
     pub r11: u64, pub r10: u64, pub r9: u64, pub r8: u64,
     pub rbp: u64, pub rdi: u64, pub rsi: u64, // note the missing RSP: it's saved by the CPU
@@ -95,14 +79,11 @@ pub struct ExecutionState {
     pub rsp: u64, pub ss: u64,
 }
 
-/// External callback type. See also: [`Manager::set_handler`]
-pub type Handler = fn(&mut ExecutionState) -> bool;
-
 /// Look-up table for converting exceptions to nice names
-const EXCEPTION_NAMES: [&str; 22] = [
+static EXCEPTION_NAMES: [&str; 22] = [
     "#DE, divide fault",
     "#DB, debug trap",
-    "", // NMI
+    "NMI, non-maskable interrupt",
     "#BP, breakpoint trap",
     "#OF, overflow trap",
     "#BR, bound fault",
@@ -124,12 +105,13 @@ const EXCEPTION_NAMES: [&str; 22] = [
     "#CP, control fault",
 ];
 
-/// CPU exception types
-#[derive(Clone, Copy, PartialEq, Eq)]
-#[derive(strum_macros::VariantArray)] // TODO: convert to FromRepr
-pub enum ExceptionType {
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(strum::FromRepr)]
+enum TargetException {
     DivideError = 0,
     DebugException = 1,
+    Nmi = 2,
     Breakpoint = 3,
     Overflow = 4,
     BoundRangeExceeded = 5,
@@ -146,145 +128,181 @@ pub enum ExceptionType {
     MachineCheck = 18,
     SimdException = 19,
     VirtualizationException = 20,
-    ControlProtectionException = 21,
+    ControlProtection = 21,
 }
-impl TryFrom<u8> for ExceptionType {
-    type Error = ();
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        for i in Self::VARIANTS {
-            if *i as u8 == value { return Ok(*i) }
-        }
-        Err(())
-    }
-}
-impl From<ExceptionType> for u8 {
-    fn from(value: ExceptionType) -> Self {
-        value as u8
+
+impl From<TargetException> for &'static str {
+    fn from(value: TargetException) -> Self {
+        EXCEPTION_NAMES[value as usize]
     }
 }
 
-/// Interrupt vectors, including CPU exceptions. In this context, a vector is
-/// just a number that's used to know what happened: a division by zero, a timer
-/// firing or something else.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Vector {
-    Internal(ExceptionType),
-    External(u8),
+static ARITH_EXCEPTS: &[u8] = &[
+    TargetException::DivideError as _,
+    TargetException::NoMathCoprocessor as _,
+    TargetException::MathFault as _,
+    TargetException::SimdException as _,
+];
+static BREAKPOINT_EXCEPTS: &[u8] = &[
+    TargetException::DebugException as _,
+    TargetException::Breakpoint as _,
+];
+static HARD_FAULT_EXCEPTS: &[u8] = &[
+    TargetException::Nmi as _,
+    TargetException::MachineCheck as _,
+];
+static ACCESS_EXCEPTS: &[u8] = &[
+    TargetException::GeneralProtectionFault as _,
+    TargetException::PageFault as _,
+    TargetException::AlignmentCheck as _,
+    TargetException::ControlProtection as _,
+];
+
+/// First vector number that is allowed to be triggered by an external interrupt
+const MIN_EXTERNAL: u8 = 32;
+
+/// Error code generated by the #PF Page Fault exception
+#[bitfield(u64)]
+struct PfErrorCode {
+    present: bool,
+    write: bool,
+    user_mode: bool,
+    reserved_bit_used: bool,
+    protection_key: bool,
+    shadow_stack: bool,
+    hlat: bool,
+    sgx: bool,
+    #[bits(7)]
+    _rsvd: u8,
+    secure_guard: bool,
+    #[bits(48)]
+    _rsvd2: u64,
 }
-impl TryFrom<u8> for Vector {
-    type Error = ();
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        if let Ok(intr) = value.try_into() {
-            Ok(Self::Internal(intr))
-        } else if (32..MAX_INTERRUPT_CNT).contains(&value) {
-            Ok(Self::External(value))
-        } else {
-            Err(())
+
+impl IfCpuState for CpuState {
+    fn exception_info(&self) -> Option<ExceptionInfo> {
+        let vector = self.vector as u8;
+        if vector >= MIN_EXTERNAL {
+            return None;
         }
+        let Some(exception) = TargetException::from_repr(vector) else {
+            return Some(ExceptionInfo::PlatformSpecific(vector));
+        };
+        Some(match exception {
+            TargetException::DivideError |
+            TargetException::NoMathCoprocessor |
+            TargetException::MathFault |
+            TargetException::SimdException => ExceptionInfo::ArithmeticError,
+            TargetException::DebugException |
+            TargetException::Breakpoint => ExceptionInfo::Breakpoint,
+            TargetException::Nmi |
+            TargetException::MachineCheck => ExceptionInfo::HardwareFailure,
+            TargetException::GeneralProtectionFault => ExceptionInfo::InvalidAccess(None, None),
+            TargetException::PageFault => {
+                let code = PfErrorCode::from_bits(self.err_code);
+                let error = if code.user_mode() {
+                    AccessError::UserMode { write: code.write(), page_present: code.present() }
+                } else {
+                    AccessError::SupervisorMode { write: code.write(), page_present: code.present() }
+                };
+                ExceptionInfo::InvalidAccess(Some(error), VirtAddr::from_usize(self.cr2 as usize).ok())
+            },
+            TargetException::AlignmentCheck => ExceptionInfo::InvalidAccess(Some(AccessError::Alignment), None),
+            TargetException::ControlProtection => ExceptionInfo::InvalidAccess(Some(AccessError::StackCorruption), None),
+            _ => ExceptionInfo::PlatformSpecific(vector),
+        })
+    }
+
+    fn platform_exception_name(&self) -> Option<&'static str> {
+        let vector = self.vector as u8;
+        if vector >= MIN_EXTERNAL {
+            return None;
+        }
+        TargetException::from_repr(vector)?;
+        Some(EXCEPTION_NAMES[vector as usize])
+    }
+
+    fn program_counter(&self) -> Option<VirtAddr> {
+        VirtAddr::from_usize(self.rip as usize).ok()
     }
 }
-impl From<Vector> for u8 {
-    fn from(value: Vector) -> Self {
-        match value {
-            Vector::Internal(intr) => intr.into(),
-            Vector::External(intr) => intr,
-        }
+
+impl Debug for CpuState {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        writeln!(f, "RAX={:#018x}  RBX={:#018x}  RCX={:#018x}  RDX={:#018x}", self.rax, self.rbx, self.rcx, self.rdx)?;
+        writeln!(f, "RBP={:#018x}  RSP={:#018x}  RSI={:#018x}  RDI={:#018x}", self.rbp, self.rsp, self.rsi, self.rdi)?;
+        writeln!(f, "R8=={:#018x}  R9=={:#018x}  R10={:#018x}  R11={:#018x}", self.r8, self.r9, self.r10, self.r11)?;
+        writeln!(f, "R12={:#018x}  R13={:#018x}  R14={:#018x}  R15={:#018x}", self.r12, self.r13, self.r14, self.r15)?;
+        writeln!(f, "RIP={:#018x}  RFL={:#018x}  CR2={:#018x}  VEC={:#018x}  ERR={:#010x}", self.rip, self.rflags, self.cr2, self.vector, self.err_code)?;
+        writeln!(f, "CS={:#06x}  SS={:#06x}  DS={:#06x}", self.cs, self.ss, self.ds)?;
+        writeln!(f, "Exception: {:?} {:?}", self.exception_info(), self.platform_exception_name())?;
+        write!(f, "Handler: {:#018x}", self.handler)
     }
 }
-impl core::fmt::Debug for Vector {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+
+/// One vector in our abstraction may correspond to multiple hardware vectors
+impl IntrVector {
+    fn to_platform_vectors(self) -> Either<&'static [u8], u8> {
         match self {
-            Self::External(ex) => write!(f, "external vector {ex}"),
-            Self::Internal(int) => write!(f, "{}", EXCEPTION_NAMES[*int as u8 as usize]),
+            IntrVector::ArithmeticError => Either::Left(ARITH_EXCEPTS),
+            IntrVector::Breakpoint => Either::Left(BREAKPOINT_EXCEPTS),
+            IntrVector::HardwareFailure => Either::Left(HARD_FAULT_EXCEPTS),
+            IntrVector::InvalidAccess => Either::Left(ACCESS_EXCEPTS),
+            IntrVector::IllegalInstruction => Either::Right(TargetException::UndefinedOpcode as _),
+            IntrVector::PlatformSpecificException(e) => Either::Right(e),
+            IntrVector::External(e) if e >= MIN_EXTERNAL => Either::Right(e),
+            IntrVector::External(_) /* if internal */ => panic!(),
         }
     }
 }
-impl Vector {
-    /// Some CPU exceptions push an error code, some do not. When generating a
-    /// trampoline for an exception which does not push an error code, we emit
-    /// a push of zero for consistency.
-    fn cpu_pushes_errcode(self) -> bool {
-        matches!(self,
-            Self::Internal(ExceptionType::DoubleFault) |
-            Self::Internal(ExceptionType::InvalidTss) |
-            Self::Internal(ExceptionType::SegmentNotPresent) |
-            Self::Internal(ExceptionType::StackSegmentFault) |
-            Self::Internal(ExceptionType::GeneralProtectionFault) |
-            Self::Internal(ExceptionType::PageFault) |
-            Self::Internal(ExceptionType::AlignmentCheck) |
-            Self::Internal(ExceptionType::ControlProtectionException))
-    }
+
+fn cpu_pushes_errcode(vector: u8) -> bool {
+    let exc = TargetException::from_repr(vector);
+    let Some(exc) = exc else { return false };
+    matches!(exc,
+        TargetException::DoubleFault |
+        TargetException::InvalidTss |
+        TargetException::SegmentNotPresent |
+        TargetException::StackSegmentFault |
+        TargetException::GeneralProtectionFault |
+        TargetException::PageFault |
+        TargetException::AlignmentCheck |
+        TargetException::ControlProtection)
 }
 
-/// This is the final handling "entry point", so to speak. There are 256
+/// This is the final handling entry point in this module. There are 256
 /// functions that the CPU is aware of - we call them trampolines, because all
 /// they do is push some values to the stack and jump to [`_intr_reg_wrapper`].
 /// That latter function pushes the remaining CPU state (that was not pushed by
 /// either the CPU itself or a trampoline) and calls this function with a
 /// pointer to the cumulative state that has been captured. Our job now is to
 /// call a handler that our trampoline has given us and provide it a safe
-/// interface for interacting with the captured CPU state. Once we return
-/// (assuming we hadn't panicked, which we very well might), we're going to pop
-/// back into assembly code which is going to restore the (possibly modified)
-/// state.
+/// interface for interacting with the captured CPU state. Once we return, we're
+/// going to pop back into assembly code which is going to restore the
+/// possibly modified state.
 #[no_mangle]
 // The ABI is specified explicitly because we need to feed this function a
 // parameter from assembly. sysv64 specifically just because I prefer it.
-extern "sysv64" fn _intr_common_handler(state_ptr: *mut ExecutionState) {
+extern "sysv64" fn _intr_common_handler(state_ptr: *mut CpuState) {
     // SAFETY: what we've been given is essentially a pointer to a large stack
-    // variable. We're the sole owners of it, no race conditions are going to
-    // occur.
-    // The pointer type itself implies transmutation to/from a collection of
-    // u64s. It is rendered safe thanks to repr(C).
-    let mut state = unsafe { (*state_ptr).clone() };
+    // variable, created just for us. Data at that pointer will not be accessed
+    // until we return.
+    let state = unsafe { &mut *state_ptr };
+    let handler_fn = state.handler as *const ();
+    let is_exception = state.exception_info().is_some();
 
-    if let Ok(vector) = (state.vector as u8).try_into() {
-        // print vector and errcode
-        let code = state.err_code;
-        let rip: VirtAddr = (state.rip as usize).into();
-        log::trace!("got {vector:?} (errcode {code}) at RIP {rip:?}");
-
-        // call handler
-        let is_handled = match state.handler {
-            0 => false,
-            _ => {
-                let handler = state.handler as *const ();
-                // SAFETY: the number that we're transmuting into a function
-                // pointer has been given to us by [Manager]. It is unique to
-                // this CPU and the manager ensures that the trampoline (and
-                // this pointer that's contained within) is always valid and
-                // not half-overwritten by a handler change in progress.
-                let handler: Handler = unsafe { core::mem::transmute(handler) };
-                handler(&mut state)
-            }
-        };
-
-        // dump and panic on unhandled exception
-        let is_exception = matches!(vector, Vector::Internal(_));
-        if !is_handled && is_exception {
-            log::error!("unhandled {vector:?}; errcode: {code}");
-            if vector == Vector::Internal(ExceptionType::PageFault) {
-                let cr2: u64;
-                // SAFETY: getting the CR2 (which contains the accessed address
-                // that caused the fault) is safe
-                unsafe { asm!("mov {0}, cr2", out(reg) cr2) };
-                log::error!("CR2={cr2:#018x}");
-            }
-            log::error!("RAX={:#018x}  RBX={:#018x}  RCX={:#018x}  RDX={:#018x}", state.rax, state.rbx, state.rcx, state.rdx);
-            log::error!("RBP={:#018x}  RSP={:#018x}  RSI={:#018x}  RDI={:#018x}", state.rbp, state.rsp, state.rsi, state.rdi);
-            log::error!("R8=={:#018x}  R9=={:#018x}  R10={:#018x}  R11={:#018x}", state.r8, state.r9, state.r10, state.r11);
-            log::error!("R12={:#018x}  R13={:#018x}  R14={:#018x}  R15={:#018x}", state.r12, state.r13, state.r14, state.r15);
-            log::error!("RIP={:#018x}  RFL={:#018x}", state.rip, state.rflags);
-            log::error!("CS={:#06x}  SS={:#06x}", state.cs, state.ss);
-            panic!("unhandled exception in emulator code: {vector:?}");
+    if handler_fn.is_null() {
+        if is_exception {
+            log::error!("{state:?}");
+            panic!("unhandled exception");
+        } else {
+            log::warn!("unhandled interrupt {:?}", state.vector);
+            return;
         }
-    } else {
-        log::warn!("received invalid vector {}", state.vector)
-    };
+    }
 
-    // apply updated state
-    // SAFETY: read beginning of this function.
-    unsafe { *state_ptr = state };
+    let handler: IntrHandler = unsafe { core::mem::transmute(handler_fn) };
+    handler(state);
 }
 
 /// Called by one of the trampolines. Saves the not-yet-saved registers and
@@ -310,10 +328,17 @@ unsafe extern "C" fn _intr_reg_wrapper() -> ! {
         "push r13",
         "push r14",
         "push r15",
+        "mov rax, cr2",
+        "push rax",
+        "mov rax, ds",
+        "push rax",
         // call handler
         "mov rdi, rsp", // sysv64: rdi contains first argument
         "call _intr_common_handler",
         // restore registers
+        "pop rax",
+        "mov ds, rax",
+        "pop rax", // pop cr2 into nowhere
         "pop r15",
         "pop r14",
         "pop r13",
@@ -329,7 +354,7 @@ unsafe extern "C" fn _intr_reg_wrapper() -> ! {
         "pop rcx",
         "pop rbx",
         "add rsp, 16", // vector and handler
-        "pop rax",
+        "pop rax", // was saved by trampoline
         "add rsp, 8", // error code
         // return from interrupt
         "iretq",
@@ -373,19 +398,13 @@ const NOP_INSTRUCTION: u8 = 0x90;
 /// Generates executable code that pushes the vector and handle pointer and
 /// jumps to [`_intr_reg_wrapper`]. This is the code that the CPU calls directly
 /// when an interrupt occurs.
-fn make_trampoline(vector: u8, cpu_pushes_errcode: bool, handler: Option<Handler>) -> [u8; TRAMPOLINE_SIZE] {
-    // get handler address
+fn make_trampoline(vector: u8, handler: Option<IntrHandler>) -> [u8; TRAMPOLINE_SIZE] {
+    // get function handler addresses
     let handler_addr: usize = match handler {
         None => 0,
-        Some(handler) => {
-            let handler_addr: VirtAddr = (handler as *const () as usize).into();
-            handler_addr.into()
-        },
+        Some(handler) => handler as *const () as usize,
     };
-
-    // get wrapper address
-    let wrapper_addr: VirtAddr = (_intr_reg_wrapper as *const () as usize).into();
-    let wrapper_addr: usize = wrapper_addr.into();
+    let wrapper_addr = _intr_reg_wrapper as *const () as usize;
 
     // insert addresses
     let mut code = TRAMPOLINE_SKELETON;
@@ -393,14 +412,19 @@ fn make_trampoline(vector: u8, cpu_pushes_errcode: bool, handler: Option<Handler
     code[18..26].copy_from_slice(&wrapper_addr.to_le_bytes());
     code[15] = vector;
 
-    if cpu_pushes_errcode {
+    if cpu_pushes_errcode(vector) {
         // remove the first instruction (two bytes)
-        code[0] = NOP_INSTRUCTION;
+        code[0] = NOP_INSTRUCTION; 
         code[1] = NOP_INSTRUCTION;
-        code.rotate_left(2);
     }
 
     code
+}
+
+/// Checks that the handler address contained in a trampoline is non-zero
+fn trampoline_handler_installed(trampoline: &[u8; TRAMPOLINE_SIZE]) -> bool {
+    let address = u64::from_ne_bytes(trampoline[5..13].try_into().unwrap());
+    address > 0
 }
 
 /// An entry in the Interrupt Descriptor Table.
@@ -425,6 +449,8 @@ struct IdtEntry {
     _rsvd: u32,
 }
 
+type AllIdtEntries = [IdtEntry; INTERRUPT_CNT];
+
 #[allow(dead_code)]
 #[repr(C, packed)]
 struct RawTss {
@@ -438,26 +464,32 @@ struct RawTss {
 }
 
 #[allow(dead_code)]
-struct RawIdt(*mut [IdtEntry; MAX_INTERRUPT_CNT as usize], *mut RawTss);
+struct RawIdt(*mut AllIdtEntries, *mut RawTss, CommonSelectors);
+
+const PAGE_SIZE: usize = MemoryParameters::PAGE_SIZE;
 
 impl RawIdt {
-    fn new() -> (RawIdt, CommonSelectors) {
-        // allocate space for both tables
-        assert!(size_of::<[IdtEntry; MAX_INTERRUPT_CNT as usize]>() <= PAGE_SIZE);
-        assert!(size_of::<RawTss>() <= PAGE_SIZE);
-        let pages = phys::allocate(2);
-        let pages: (VirtAddr, VirtAddr) = (pages[0].into(), pages[1].into());
-        let idt: *mut [IdtEntry; MAX_INTERRUPT_CNT as usize] = pages.0.into();
-        let tss: *mut RawTss = pages.1.into();
+    fn new(addr_space: &mut AddrSpace) -> RawIdt {
+        // allocate IDT and TSS
+        let idt = addr_space.modify().allocate_anywhere(
+            size_of::<AllIdtEntries>().div_ceil(PAGE_SIZE),
+            Default::default(),
+            AllocReturn::Start
+        ).unwrap().to_mut_ptr::<AllIdtEntries>();
 
-        // do the annoying GDT thing
-        let selectors = Gdt::do_annoying_boilerplate_thing(tss.into());
+        let tss = addr_space.modify().allocate_anywhere(
+            size_of::<RawTss>().div_ceil(PAGE_SIZE),
+            Default::default(),
+            AllocReturn::Start
+        ).unwrap().to_mut_ptr::<RawTss>();
 
-        (RawIdt(idt, tss), selectors)
+        let selectors = Gdt::do_annoying_boilerplate_thing(addr_space, VirtAddr::from_mut_ptr(tss).unwrap());
+
+        RawIdt(idt, tss, selectors)
     }
 
     unsafe fn set_as_current(&self) {
-        let idtr = DescTableRegister::make(self.0.into(), (size_of::<[IdtEntry; MAX_INTERRUPT_CNT as usize]>() - 1) as u16);
+        let idtr = DescTableRegister::make(VirtAddr::from_mut_ptr(self.0).unwrap(), (size_of::<[IdtEntry; INTERRUPT_CNT]>() - 1) as u16);
         idtr.load(DescTableKind::Interrupt);
     }
 
@@ -465,8 +497,7 @@ impl RawIdt {
         match raw_isr {
             None => (*self.0)[vector as usize] = IdtEntry::new().with_present(false),
             Some(raw_isr) => {
-                let isr_addr: VirtAddr = (raw_isr as usize).into();
-                let handler_addr: usize = isr_addr.into();
+                let handler_addr = raw_isr as usize;
                 (*self.0)[vector as usize] = IdtEntry::new()
                     .with_present(true)
                     .with_gate_type(SystemSegmentType::IntrGate as u8)
@@ -482,117 +513,143 @@ impl RawIdt {
 }
 
 /// Public interface for managing interrupts, one per CPU.
-pub struct Manager {
+pub struct IntrMgr {
     idt: RawIdt,
     selectors: CommonSelectors,
     trampolines: &'static mut [[u8; TRAMPOLINE_SIZE]],
 }
 
-impl Manager {
+impl IfIntrMgr for IntrMgr {
     /// Makes a new interrupt manager. Though several can be created per CPU,
-    /// this is not very useful as their lifetimes are static and only one 
+    /// this is not very useful as their lifetimes are static and only one of
     /// them can be active at a time. Having one per CPU is the intended use
     /// case.
-    pub fn new(addr_space: &mut AddressSpace) -> (Manager, CommonSelectors) {
-        boot_stage::new_level();
+    fn new(addr_space: &mut AddrSpace) -> IntrMgr {
+        let mut idt = RawIdt::new(addr_space);
 
-        boot_stage::same_level("Constructing GDT, IDT and TSS");
-        let (mut idt, selectors) = RawIdt::new();
-
-        boot_stage::same_level("Constructing trampolines");
-        assert!(size_of::<[[u8; TRAMPOLINE_SIZE]; MAX_INTERRUPT_CNT as usize]>() <= PAGE_SIZE);
-        let pages = phys::allocate(1);
-        let phys_page = pages[0];
-        let virt_page: VirtAddr = phys_page.into();
-        let tramp: *mut [u8; TRAMPOLINE_SIZE] = virt_page.into();
+        let pages = size_of::<[[u8; TRAMPOLINE_SIZE]; INTERRUPT_CNT]>().div_ceil(PAGE_SIZE);
+        let tramp = addr_space.modify().allocate_anywhere(
+            pages,
+            Default::default(),
+            AllocReturn::Start
+        ).unwrap().to_mut_ptr::<[u8; TRAMPOLINE_SIZE]>();
         // SAFETY: this buffer has just been allocated by us, is of the correct
         // size, and is static.
-        let tramp = unsafe { core::slice::from_raw_parts_mut(tramp, MAX_INTERRUPT_CNT as usize) };
+        let tramp = unsafe { core::slice::from_raw_parts_mut(tramp, INTERRUPT_CNT) };
 
         for (i, tramp) in tramp.iter_mut().enumerate() {
-            if let Ok(vec) = (i as u8).try_into() {
-                let vec: Vector = vec;
-                if vec == Vector::Internal(ExceptionType::DoubleFault) {
-                    // double faults are special
-                    unsafe {
-                        // SAFETY: the pointer points to valid executable code
-                        idt.set_raw_isr(selectors.emu_code, i as u8, Some(double_fault_isr));
-                    }
-                } else {
-                    let code = make_trampoline(vec.into(), vec.cpu_pushes_errcode(), None);
-                    *tramp = code;
-                    let f_ptr = tramp as *mut u8;
-                    unsafe {
-                        // SAFETY: transmuting a thin pointer into another thin pointer
-                        let f_ptr: unsafe extern "C" fn() -> ! = core::mem::transmute(f_ptr);
-                        // SAFETY: the pointer points to valid executable code
-                        idt.set_raw_isr(selectors.emu_code, i as u8, Some(f_ptr));
-                    }
+            if i == (TargetException::DoubleFault as usize) {
+                unsafe {
+                    // SAFETY: the pointer points to valid executable code
+                    idt.set_raw_isr(idt.2.emu_code, i as u8, Some(double_fault_isr));
+                }
+            } else {
+                let code = make_trampoline(i as u8, None);
+                *tramp = code;
+                let f_ptr = tramp as *mut u8;
+                unsafe {
+                    // SAFETY: transmuting a thin pointer into another thin pointer
+                    let f_ptr: unsafe extern "C" fn() -> ! = core::mem::transmute(f_ptr);
+                    // SAFETY: the pointer points to valid executable code
+                    idt.set_raw_isr(idt.2.emu_code, i as u8, Some(f_ptr));
                 }
             }
         }
 
-        boot_stage::same_level("Mapping memory");
-        // allow execution in the page with trampolines
-        addr_space.modify().map_range(
-            virt_page,
-            phys_page,
-            1,
-            TableAttrs { execute: true, ..Default::default() },
-            false
-        ).unwrap();
-
-        boot_stage::end_level();
-        (Manager { idt, selectors, trampolines: tramp }, selectors)
+        let selectors = idt.2;
+        IntrMgr { idt, selectors, trampolines: tramp }
     }
 
-    /// Selects this interrupt manager as the active one for the CPU this method
-    /// is executed on.
-    /// 
-    /// # Safety
-    /// It is unsafe for an interrupt table with handlers that do bad things to
-    /// be selected. Interrupt handlers registered with this manager have the
-    /// ability to modify the state of other running code at will - it's very
-    /// powerful, but inherently very dangerous. Extreme care must be taken when
-    /// writing interrupt handlers.
-    /// 
-    /// Weird, nonsensical, time-dependent bugs **_will_** pop up if a handler
-    /// modifies the state that it has been given in a bad way. My
-    /// _recommendation_ is to either not fiddle with the state at all, or
-    /// completely replace it with a cloned copy of another state structure for
-    /// the purposes of task switching.
-    pub unsafe fn set_as_current(&self) {
+    unsafe fn set_as_current(&self) {
         self.idt.set_as_current();
         self.selectors.emu_code.set(SelectorRegister::Code);
         self.selectors.emu_data.set(SelectorRegister::Data);
         self.selectors.emu_data.set(SelectorRegister::Stack);
     }
 
-    /// Sets the function that will be called when an interrupt occurs. This
-    /// function is provided with a mutable reference to the state that the CPU
-    /// was in when it was interrupted. The handler is free to modify it; any
-    /// changes that it makes will be applied once it returns.
-    /// 
-    /// If the vector is for an internal interrupt (i.e. an exception), then the
-    /// return value of the provided function signifies whether the handling of
-    /// the exception was successful. If it returns `false`, the emulator will
-    /// dump the CPU state and panic. The return value is ignored in case of
-    /// external interrupts.
-    /// 
-    /// This function will return an error if `vector` is [Vector::Internal()]
-    /// of [ExceptionType::DoubleFault], as there's a special handler for double
-    /// faults that cannot be overridden.
-    /// 
-    /// This method does not accept closures, only functions and simple lambdas
-    /// (closures which don't capture anything).
-    pub fn set_handler(&mut self, vector: Vector, handler: Option<Handler>) -> Result<(), Error> {
-        if vector == Vector::Internal(ExceptionType::DoubleFault) { return Err(Error::TriedToInstallDoubleFault) }
+    fn set_handler(&mut self, vector: IntrVector, handler: Option<IntrHandler>) -> Result<()> {
+        let vectors = vector.to_platform_vectors();
+        match vectors {
+            Either::Right(x) => {
+                self.trampolines[x as usize] = make_trampoline(x, handler);
+            },
+            Either::Left(multiple) => {
+                for x in multiple {
+                    self.trampolines[*x as usize] = make_trampoline(*x, handler);
+                }
+            }
+        }
 
-        let trampoline = make_trampoline(vector.into(), vector.cpu_pushes_errcode(), handler);
-        mask_external();
-        let vector: u8 = vector.into();
-        self.trampolines[vector as usize] = trampoline;
-        enable_external();
         Ok(())
+    }
+
+    fn allocate_external_line(&mut self, handler: IntrHandler) -> Result<IntrVector> {
+        for i in (MIN_EXTERNAL as usize) .. INTERRUPT_CNT {
+            if !trampoline_handler_installed(&self.trampolines[i]) {
+                let vector = IntrVector::External(i as u8);
+                self.set_handler(vector, Some(handler))?;
+                return Ok(vector);
+            }
+        }
+        Err(Error::NoFreeLines)
+    }
+
+    fn disable_external(&mut self) {
+        unsafe { asm!("cli") };
+    }
+
+    fn enable_external(&mut self) {
+        unsafe { asm!("sti") };
+    }
+}
+
+/// Non-UB platform-specific footguns. Used by [`interface::tests`] to test
+/// exception handling.
+pub(crate) mod throw_exception {
+    // All these things are only considered UB in higher-level languages such as
+    // C and Rust. When written in assembly, the behavior is very much defined
+    // by the ISA specification. These things throw exceptions which the
+    // [`tests`] module tests for.
+
+    use core::arch::asm;
+    use super::CpuState;
+
+    pub fn skip_faulting_instruction(state: &mut CpuState) {
+        state.rip += state.rcx;
+    }
+
+    pub fn divide_by_zero() {
+        unsafe {
+            // SAFETY: read module comment
+            asm!(
+                "xor rax, rax",
+                "div rax",
+                out("rax") _,
+                out("rdx") _,
+                in("rcx") 3,
+            );
+        }
+    }
+
+    pub fn dereference_null() {
+        unsafe {
+            // SAFETY: read module comment
+            asm!(
+                "xor {0:r}, {0:r}",
+                "mov {0:r}, [{0:r}]",
+                out(reg) _,
+                in("rcx") 3,
+            );
+        }
+    }
+
+    pub fn illegal_instruction() {
+        unsafe {
+            // SAFETY: read module comment
+            asm!(
+                "ud2",
+                in("rcx") 2,
+            );
+        }
     }
 }

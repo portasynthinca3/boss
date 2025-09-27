@@ -297,6 +297,7 @@ pub struct Module {
     /// Map of functions (name and arity) to the entry label
     pub exports: HashMap<(LocalAtomRef, usize), usize>,
     /// Defined literal terms
+    #[allow(unused)]
     literals: Box<[LocalTerm]>,
     /// Instruction pointers of labels
     pub labels: Box<[usize]>,

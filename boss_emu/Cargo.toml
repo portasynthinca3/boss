@@ -6,12 +6,13 @@ edition = "2021"
 [dependencies]
 boss_common = { path = "../boss_common" }
 log = { workspace = true }
-uefi = { workspace = true }
-spin = "0.9.8"
-hashbrown = "0.14"
-miniz_oxide = "0.7.4"
-num-bigint = { version = "0.4", default-features = false }
-strum_macros = { version = "0.26", default-features = false }
+spin = { workspace = true }
+hashbrown = { workspace = true }
+miniz_oxide = { workspace = true }
+num-bigint = { workspace = true }
+strum = { workspace = true }
+strum_macros = { workspace = true }
+bincode = { workspace = true }
 
 [build-dependencies]
 regex = "1.10"
@@ -26,3 +27,5 @@ trace-hal-video = ["boss_common/trace-hal-video"]
 trace-beam = []
 # Trace messages between BEAM processes
 trace-messages = []
+# Run target abstraction tests
+run-tests = []

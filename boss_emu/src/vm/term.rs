@@ -168,7 +168,7 @@ impl core::fmt::Debug for LocalTerm {
                 #[allow(deprecated)]
                 let mut hash = SipHasher::default();
                 parts.hash(&mut hash);
-                write!(f, "#Ref<{:04x}>", hash.finish() & 0xffff)
+                write!(f, "#Ref<{:08x}>", hash.finish() & 0xffffffff)
             },
             Pid(Eid(sched, seq)) => write!(f, "<{sched}.{seq}>"),
             Port(Eid(sched, seq)) => write!(f, "#Port<{sched}.{seq}>"),

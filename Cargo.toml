@@ -5,5 +5,16 @@ members = ["boss_common", "boss_boot", "boss_emu"]
 resolver = "2"
 
 [workspace.dependencies]
-uefi = "0.26.0"
+bitflags = "2.9.0"
+derive_more = { version = "2.0.1", default-features = false, features = ["full"] }
 log = "0.4.20"
+uefi =  "0.26.0"
+bitfield-struct = "0.11.0"
+spin = "0.9.8"
+bincode = { version = "2.0.1", default-features = false, features = ["derive"] }
+strum = { version = "0.26", default-features = false, features = ["derive"] }
+strum_macros = { version = "0.26", default-features = false }
+hashbrown = "0.14"
+miniz_oxide = { version = "0.7.4", default-features = false }
+num-bigint = { version = "0.4", default-features = false }
+itertools = { version = "0.14.0", default-features = false }
