@@ -13,6 +13,7 @@ extern crate alloc;
 pub mod vm;
 
 use core::{arch::asm, panic::PanicInfo};
+use boss_common::target::interface::firmware::FirmwareServices;
 use spin::{Mutex, Once};
 
 use boss_common::emu_params::EmuParams;
@@ -22,6 +23,8 @@ use boss_common::target::current::{
     memmgr::*,
     device::wall_clock::*,
     interrupt::*,
+    acpi::*,
+    smp::*,
 };
 
 #[cfg(feature = "run-tests")]
@@ -42,12 +45,12 @@ static LOGGER: Once<SerialLogger> = Once::new();
 static PHYS_ALLOC: Once<Mutex<PhysAlloc>> = Once::new();
 
 /// Entry point. Performs initialization of all the components
-#[no_mangle]
+#[unsafe(no_mangle)]
 extern "C" fn _start(params_location: usize, params_size: usize) -> ! {
     // get parameters from bootloader
     let params_slice = unsafe { core::slice::from_raw_parts(params_location as *const u8, params_size) };
     let (EmuParams {
-        firmware: _,
+        mut firmware,
         data_image,
         phys_alloc,
         wall_clock,
@@ -67,13 +70,17 @@ extern "C" fn _start(params_location: usize, params_size: usize) -> ! {
     log::debug!("clock resolution: {} ps", wall_clock.resolution_ps());
     runtime_cfg::set_flags(CfgFlags::ExecutingInUpperHalf, true);
 
-    log::debug!("init memory management");
+    log::debug!("memory management init");
     let phys_alloc = PHYS_ALLOC.call_once(move || Mutex::new(phys_alloc));
     let mut addr_space = unsafe { AddrSpace::get_current(phys_alloc) };
     addr_space.modify().unmap_range(MemoryParameters::range(Region::NifOrIdentity)).unwrap();
 
-    log::debug!("init interrupts");
-    let mut interrupt_mgr = IntrMgr::new(&mut addr_space);
+    log::debug!("acpi init");
+    let acpi = unsafe { firmware.take_acpi().ok() };
+    if acpi.is_none() { log::debug!("no ACPI") };
+
+    log::debug!("interrupts init");
+    let mut interrupt_mgr = IntrMgr::new(&mut addr_space, acpi.as_ref());
     unsafe { interrupt_mgr.set_as_current(); }
 
     #[cfg(feature = "run-tests")]
@@ -81,26 +88,21 @@ extern "C" fn _start(params_location: usize, params_size: usize) -> ! {
         let mut test_env = TestEnv {
             phys_alloc,
             wall_clock,
-            scratchpad_area: MemoryParameters::range(Region::EmulatorHeap),
+            scratchpad_area: MemoryParameters::range(Region::LocalHeap),
             addr_space: &mut addr_space,
             intr_mgr: &mut interrupt_mgr,
         };
         tests::run_all(&mut test_env);
     }
 
-//     // initialize ACPI
-//     boot_stage::same_level("ACPI");
-//     unsafe { acpi::init(glue.acpi_xsdp) };
+    log::debug!("smp init");
+    let mut smp = unsafe { SmpManager::new(&interrupt_mgr, acpi.as_ref(), &mut addr_space, phys_alloc, wall_clock) };
+    smp.initialize_all_aps();
 
-//     // initialize APIC and multiprocessing
-//     boot_stage::same_level("APIC");
-//     let madt = acpi::find_table::<apic::Madt>().unwrap();
-//     apic::init(madt, &mut interrupt_mgr, &mut addr_space);
+    log::debug!("heap alloc init");
+    initialize_global_alloc(addr_space.take_portion(&MemoryParameters::range(Region::LocalHeap)).unwrap());
 
-    // initialize global allocator
-    initialize_global_alloc(addr_space.take_portion(&MemoryParameters::range(Region::EmulatorHeap)).unwrap());
-
-    // start the VM
+    log::debug!("vm start");
     let data_image = unsafe { core::slice::from_raw_parts(data_image.0.to_ptr(), data_image.1) };
     let base_image = TarFile::new(data_image);
     vm::init(&base_image).unwrap()

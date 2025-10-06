@@ -6,6 +6,8 @@
 #![no_main]
 #![no_std]
 
+#![allow(unsafe_op_in_unsafe_fn)]
+
 use core::{panic::PanicInfo, slice};
 use miniz_oxide::inflate::{self, TINFLStatus, core::inflate_flags::*};
 use spin::{Mutex, Once};
@@ -177,7 +179,7 @@ fn generic_entry(firmware: UninitializedFirmware) -> ! {
     let compressed_images: [(ImageType, VirtAddr, &[u8]); 2] = [
         (
             ImageType::ElfExecutable(*MemoryParameters::range(Region::EmulatorImage).start()),
-            *MemoryParameters::range(Region::EmulatorHeap).start(),
+            *MemoryParameters::range(Region::LocalHeap).start(),
             include_bytes!("../../.build/boss_emu.elf.zlib"),
         ),
         (
@@ -212,7 +214,7 @@ fn generic_entry(firmware: UninitializedFirmware) -> ! {
     let data_image = (VirtAddr::from_ptr(data_image.as_ptr()).unwrap(), data_image.len());
 
     // allocate stack
-    let stack_range = MemoryParameters::range(Region::EmulatorStack);
+    let stack_range = MemoryParameters::range(Region::LocalStack);
     let stack_pages = (stack_range.end().to_usize() - stack_range.start().to_usize()) / PAGE_SIZE;
     let stack_top = addr_space.modify().allocate_range(
         *stack_range.start(),

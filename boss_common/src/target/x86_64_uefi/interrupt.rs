@@ -40,8 +40,12 @@ use core::mem::size_of;
 use core::arch::{asm, naked_asm};
 
 use crate::target::current::{
-    ll::descriptors::*,
+    ll::{
+        descriptors::*,
+        apic::*,
+    },
     memmgr::*,
+    acpi::*,
 };
 pub use crate::target::interface::interrupt::{
     IntrVector,
@@ -280,7 +284,7 @@ fn cpu_pushes_errcode(vector: u8) -> bool {
 /// interface for interacting with the captured CPU state. Once we return, we're
 /// going to pop back into assembly code which is going to restore the
 /// possibly modified state.
-#[no_mangle]
+#[unsafe(no_mangle)]
 // The ABI is specified explicitly because we need to feed this function a
 // parameter from assembly. sysv64 specifically just because I prefer it.
 extern "sysv64" fn _intr_common_handler(state_ptr: *mut CpuState) {
@@ -309,7 +313,7 @@ extern "sysv64" fn _intr_common_handler(state_ptr: *mut CpuState) {
 /// calls [`_intr_common_handler`] with a pointer to the cumulative state
 /// structure.
 #[unsafe(naked)]
-#[no_mangle]
+#[unsafe(no_mangle)]
 unsafe extern "C" fn _intr_reg_wrapper() -> ! {
     naked_asm!(
         // save registers
@@ -517,14 +521,11 @@ pub struct IntrMgr {
     idt: RawIdt,
     selectors: CommonSelectors,
     trampolines: &'static mut [[u8; TRAMPOLINE_SIZE]],
+    lapic: Lapic,
 }
 
 impl IfIntrMgr for IntrMgr {
-    /// Makes a new interrupt manager. Though several can be created per CPU,
-    /// this is not very useful as their lifetimes are static and only one of
-    /// them can be active at a time. Having one per CPU is the intended use
-    /// case.
-    fn new(addr_space: &mut AddrSpace) -> IntrMgr {
+    fn new(addr_space: &mut AddrSpace, acpi: Option<&Acpi<'_>>) -> IntrMgr {
         let mut idt = RawIdt::new(addr_space);
 
         let pages = size_of::<[[u8; TRAMPOLINE_SIZE]; INTERRUPT_CNT]>().div_ceil(PAGE_SIZE);
@@ -556,8 +557,11 @@ impl IfIntrMgr for IntrMgr {
             }
         }
 
+        let madt = acpi.unwrap().find_table::<Madt>().unwrap();
+        let lapic = Lapic::from_madt(addr_space, madt);
+
         let selectors = idt.2;
-        IntrMgr { idt, selectors, trampolines: tramp }
+        IntrMgr { idt, selectors, trampolines: tramp, lapic }
     }
 
     unsafe fn set_as_current(&self) {
@@ -600,6 +604,12 @@ impl IfIntrMgr for IntrMgr {
 
     fn enable_external(&mut self) {
         unsafe { asm!("sti") };
+    }
+}
+
+impl IntrMgr {
+    pub(crate) fn get_lapic(&self) -> &Lapic {
+        &self.lapic
     }
 }
 

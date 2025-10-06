@@ -1,7 +1,6 @@
 #![no_std]
 #![feature(
     ptr_as_uninit,
-    let_chains,
     allocator_api,
     alloc_layout_extra,
     slice_ptr_get,
@@ -11,6 +10,8 @@
     auto_traits,
     negative_impls,
 )]
+
+#![allow(unsafe_op_in_unsafe_fn)]
 
 extern crate alloc;
 

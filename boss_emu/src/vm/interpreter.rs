@@ -243,7 +243,7 @@ impl BeamInterpreter {
 
             (Opcode::Deallocate, [Some(Operand::Number(_)), ..]) => {
                 // the given argument is ignored for safety
-                let Some(YRegister::StkFrame(ref cp, stop)) = self.state.y.get(self.state.stop - 1) else {
+                let Some(YRegister::StkFrame(cp, stop)) = self.state.y.get(self.state.stop - 1) else {
                     log::error!("BEAM stack (stop={})", self.state.stop);
                     for (i, elem) in self.state.y.iter().enumerate() {
                         log::error!("{i}: {elem:?}");

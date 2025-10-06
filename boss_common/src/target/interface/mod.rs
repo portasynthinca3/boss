@@ -9,3 +9,4 @@ pub mod firmware;
 pub mod acpi;
 pub mod cpu;
 pub mod interrupt;
+pub mod smp;

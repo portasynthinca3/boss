@@ -179,21 +179,29 @@ impl Debug for concrete::VirtAddr {
 /// Memory region enumeration
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Region {
+    // All of the following items reside in non-shared virtual memory, i.e.
+    // their mapping will change from one CPU to another:
+
     /// Natively implemented Erlang functions (unprivileged code)
-    /// or identity-mapped physical memory
+    /// or identity-mapped physical memory (during early boot)
     NifOrIdentity,
-    /// Linearly mapped physical memory
-    LinearPhysical,
     /// Data passed from bootloader to emulator
     EmuParams,
+    /// Emulator stack
+    LocalStack,
+    /// Emulator heap
+    LocalHeap,
+
+    // The following items have the same mapping across CPUs:
+
     /// Decompressed and loaded emulator image
     EmulatorImage,
     /// Decompressed base image
     BaseImage,
-    /// Emulator stack
-    EmulatorStack,
-    /// Emulator heap
-    EmulatorHeap,
+    /// Linearly mapped physical memory
+    LinearPhysical,
+    /// Heap that's shared across CPUs
+    SharedHeap,
 }
 
 /// Layout of the virtual address space
@@ -281,6 +289,10 @@ pub trait PhysAlloc: Sized {
 
     /// Allocates contiguous pages of physical memory.
     fn allocate_contiguous(&mut self, pages: usize) -> Result<concrete::PhysAddr>;
+
+    /// Allocates contiguous pages of physical memory such that the starting
+    /// address satisfies the provided `selector` closure.
+    fn allocate_select(&mut self, pages: usize, selector: impl Clone + Fn(concrete::PhysAddr) -> bool) -> Result<concrete::PhysAddr>;
 
     /// Deallocates pages of physical memory.
     fn deallocate(&mut self, pages: impl Iterator<Item = concrete::PhysAddr>) -> Result<()>;

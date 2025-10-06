@@ -1,8 +1,7 @@
 use core::fmt::Write;
 use log::{Record, Level, Metadata};
 use spin::Mutex;
-use crate::target::interface::device::{serial::{Port as IfPort, PortWrite}, wall_clock::{Duration, WallClock as IfWallClock}};
-use crate::target::current::device::{serial::Port, wall_clock::WallClock};
+use crate::target::current::device::{serial::*, wall_clock::*};
 
 pub struct SerialLogger<'c> {
     port: Mutex<PortWrite<Port>>,
@@ -10,7 +9,7 @@ pub struct SerialLogger<'c> {
 }
 
 impl SerialLogger<'_> {
-    pub fn new(port_number: usize, clock: &WallClock) -> SerialLogger {
+    pub fn new(port_number: usize, clock: &WallClock) -> SerialLogger<'_> {
         SerialLogger {
             port: Mutex::new(PortWrite(Port::new(port_number))),
             clock,

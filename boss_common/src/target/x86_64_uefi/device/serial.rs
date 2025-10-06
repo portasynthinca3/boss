@@ -6,6 +6,7 @@ pub use crate::target::interface::device::serial::{
     Parity,
     DataBits,
     StopBits,
+    PortWrite,
     DEFAULT_CONFIG,
     Port as IfPort
 };

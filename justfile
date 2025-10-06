@@ -5,7 +5,7 @@
 boss_target := "x86_64-uefi"
 profile := "release"
 boot_features := ","
-emu_features := ","
+emu_features := "log-trace,"
 
 # =====================
 # Derived configuration

@@ -18,14 +18,19 @@
 //!   - MADT: Multiple APIC Descriptor Table
 //!   - LVT: Local Vector Table
 //!   - BSP: Bootstrap Processor
+//!   - IPI: Inter-Processor Interrupt
 
 use core::ptr::Pointee;
 use strum_macros::FromRepr;
 use bitflags::bitflags;
-// use spin::Once;
 
-use crate::util::{cursor::Cursor, boot_stage};
-use super::{memmgr::{PhysAddr, VirtAddr, virt::AddressSpace}, acpi::{Table, TableHeader}, hal::io_port::Port, interrupt};
+use crate::util::cursor::Cursor;
+use crate::target::current::{
+    memmgr::*,
+    acpi::*,
+};
+
+use spin::RwLock;
 
 /// Processor UID, as encoded using AML
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -33,7 +38,7 @@ pub struct ProcessorUid(pub u8);
 
 /// Local APIC ID
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
-pub struct LocalApicId(pub u8);
+pub struct LocalApicId(pub u32);
 
 /// I/O APIC ID
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -68,12 +73,12 @@ impl Table for Madt {
     }
 }
 
-struct MadtIter<'tab> {
+pub struct MadtIter<'tab> {
     cursor: Cursor<'tab>,
 }
 
 impl Madt {
-    fn iter(&self) -> MadtIter {
+    pub fn iter(&self) -> MadtIter<'_> {
         MadtIter { cursor: Cursor::new(&self.encoded_descriptors) }
     }
 }
@@ -108,7 +113,7 @@ enum MadtDescriptorType {
 
 bitflags! {
     #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-    struct LocalApicFlags: u32 {
+    pub struct LocalApicFlags: u32 {
         const ENABLED = 1 << 0;
         const ONLINE_CAPABLE = 1 << 1;
     }
@@ -116,7 +121,7 @@ bitflags! {
 
 bitflags! {
     #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-    struct InterruptFlags: u16 {
+    pub struct InterruptFlags: u16 {
         const POLARITY_FIXED = 1 << 0; // inverse: polarity according to bus default
         const POLARITY_ACTIVE_LOW = 1 << 1; // inverse: polarity is active high
         const TRIGGER_FIXED = 1 << 2; // inverse: trigger according to bus default
@@ -125,7 +130,7 @@ bitflags! {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum MadtDescriptor {
+pub enum MadtDescriptor {
     Unknown(u8),
     KnownUnsupported(MadtDescriptorType),
     LocalApic { processor: ProcessorUid, id: LocalApicId, flags: LocalApicFlags },
@@ -149,14 +154,14 @@ impl<'tab> Iterator for MadtIter<'tab> {
         let desc = match MadtDescriptorType::from_repr(record_type as usize) {
             Some(LocalApic) => {
                 let processor = ProcessorUid(record.read_u8());
-                let id = LocalApicId(record.read_u8());
+                let id = LocalApicId(record.read_u8() as _);
                 let flags = LocalApicFlags::from_bits_truncate(record.read_u32_le());
                 MadtDescriptor::LocalApic { processor, id, flags }
             },
             Some(IoApic) => {
                 let id = IoApicId(record.read_u8());
                 record.skip(1);
-                let address = PhysAddr(record.read_u32_le() as usize);
+                let address = PhysAddr::from_usize(record.read_u32_le() as usize).unwrap();
                 let gsi_base = Gsi(record.read_u32_le());
                 MadtDescriptor::IoApic { id, address, gsi_base }
             },
@@ -239,23 +244,83 @@ enum LapicRegister {
     TimerDivider = 0x3e0,
 }
 
+/// Inter-Processor Interrupt type
+pub enum ApicIpi {
+    Init,
+    Start(u8),
+    Fixed(u8),
+}
+
+pub enum ApicIpiDest {
+    Single(u32),
+    AllWithSelf,
+    AllExcludingSelf,
+}
+
 /// Local APIC
-struct Lapic {
+pub struct Lapic {
     base: *mut u32,
+    lock: RwLock<()>,
 }
 
 impl Lapic {
-    unsafe fn new(addr: PhysAddr) -> Lapic {
-        let addr: VirtAddr = addr.into();
-        Lapic { base: addr.into() }
+    unsafe fn new(addr: PhysAddr) -> Self {
+        let addr: VirtAddr = addr.try_into().unwrap();
+        Lapic { base: addr.to_mut_ptr(), lock: RwLock::new(()) }
     }
 
-    fn read(&mut self, reg: LapicRegister) -> u32 {
-        unsafe { self.base.byte_add(reg as usize).read_volatile() }
+    pub fn from_madt(addr_space: &mut AddrSpace<'_>, madt: &Madt) -> Self {
+        let phys = PhysAddr::from_usize(madt.apic_address as _).unwrap();
+        let virt = phys.try_into().unwrap();
+        addr_space.modify().map_range(virt, phys, 1, Default::default(), AllocReturn::Start).unwrap();
+        unsafe { Self::new(phys) }
     }
 
-    fn write(&mut self, reg: LapicRegister, value: u32) {
-        unsafe { self.base.byte_add(reg as usize).write_volatile(value) }
+    fn read(&self, reg: LapicRegister) -> u32 {
+        let _guard = self.lock.read();
+        return unsafe { self.base.byte_add(reg as _).read_volatile() };
+    }
+
+    fn write(&self, reg: LapicRegister, value: u32) {
+        let _guard = self.lock.write();
+        unsafe { self.write_unlocked(reg, value); }
+    }
+
+    pub unsafe fn write_unlocked(&self, reg: LapicRegister, value: u32) {
+        unsafe { self.base.byte_add(reg as _).write_volatile(value) }
+    }
+
+    pub fn id(&self) -> LocalApicId {
+        LocalApicId(self.read(LapicRegister::Id) >> 24)
+    }
+
+    pub fn send_ipi(&self, ipi: ApicIpi, dest: ApicIpiDest) {
+        let delivery_mode = match ipi {
+            ApicIpi::Init => 0b101,
+            ApicIpi::Fixed(_) => 0b000,
+            ApicIpi::Start(_) => 0b110,
+        };
+        let vector = match ipi {
+            ApicIpi::Fixed(v) => v,
+            ApicIpi::Start(v) => v,
+            _ => 0,
+        };
+        let dest_shorthand = match dest {
+            ApicIpiDest::Single(_) => 0b00,
+            ApicIpiDest::AllWithSelf => 0b10,
+            ApicIpiDest::AllExcludingSelf => 0b11,
+        };
+        let destination = match dest {
+            ApicIpiDest::Single(d) => d,
+            _ => 0,
+        };
+        let upper = destination << 24;
+        let lower = 0b_00_00_01_0_00_000_00000000_u32
+                  | (dest_shorthand << 18)
+                  | (delivery_mode << 8)
+                  | (vector as u32);
+        self.write(LapicRegister::IntrCommand1, upper);
+        self.write(LapicRegister::IntrCommand0, lower);
     }
 }
 
@@ -265,87 +330,78 @@ impl Lapic {
 
 // }
 
-const NMI_VECTOR: u8 = 2;
-const SPURIOUS_INTR_VECTOR: u8 = interrupt::MAX_INTERRUPT_CNT - 1;
-pub const LAPIC_TIMER_VECTOR: interrupt::Vector = interrupt::Vector::External(interrupt::MAX_INTERRUPT_CNT - 2);
-pub const LAPIC_MCI_VECTOR: interrupt::Vector = interrupt::Vector::External(interrupt::MAX_INTERRUPT_CNT - 3);
-pub const LAPIC_ERROR_VECTOR: interrupt::Vector = interrupt::Vector::External(interrupt::MAX_INTERRUPT_CNT - 4);
-pub const LAPIC_PERF_MON_VECTOR: interrupt::Vector = interrupt::Vector::External(interrupt::MAX_INTERRUPT_CNT - 5);
-pub const LAPIC_THERMAL_VECTOR: interrupt::Vector = interrupt::Vector::External(interrupt::MAX_INTERRUPT_CNT - 6);
-pub const ALL_PROCESSORS: ProcessorUid = ProcessorUid(255);
+// const NMI_VECTOR: u8 = 2;
+// const SPURIOUS_INTR_VECTOR: u8 = interrupt::MAX_INTERRUPT_CNT - 1;
+// pub const LAPIC_TIMER_VECTOR: interrupt::Vector = interrupt::Vector::External(interrupt::MAX_INTERRUPT_CNT - 2);
+// pub const LAPIC_MCI_VECTOR: interrupt::Vector = interrupt::Vector::External(interrupt::MAX_INTERRUPT_CNT - 3);
+// pub const LAPIC_ERROR_VECTOR: interrupt::Vector = interrupt::Vector::External(interrupt::MAX_INTERRUPT_CNT - 4);
+// pub const LAPIC_PERF_MON_VECTOR: interrupt::Vector = interrupt::Vector::External(interrupt::MAX_INTERRUPT_CNT - 5);
+// pub const LAPIC_THERMAL_VECTOR: interrupt::Vector = interrupt::Vector::External(interrupt::MAX_INTERRUPT_CNT - 6);
+// pub const ALL_PROCESSORS: ProcessorUid = ProcessorUid(255);
 
 // static LAPIC: Once<Lapic> = Once::new();
 // static PROCESSOR_LAPIC_MAP: Once<Vec<(ProcessorUid, LocalApicId)>> = Once::new();
 // static IOAPIC: Once<Vec<Ioapic>> = Once::new();
 
-/// Performs initialization of the local APIC and all I/O APICs
-pub fn init(madt: &Madt, interrupt_mgr: &mut interrupt::Manager, addr_space: &mut AddressSpace) {
-    boot_stage::new_level();
+// /// Performs initialization of the local APIC and all I/O APICs
+// pub fn init(madt: &Madt, interrupt_mgr: &mut interrupt::Manager, addr_space: &mut AddressSpace) {
+    
 
-    boot_stage::same_level("LAPIC");
-    let lapic_addr = PhysAddr(madt.apic_address as usize);
-    let lapic_virt_addr = lapic_addr.into();
-    addr_space.modify().map_range(lapic_virt_addr, lapic_addr, 1, Default::default(), false).unwrap();
+//     let mut lapic = unsafe { Lapic::new(lapic_addr) };
+//     // LAPIC.call_once(|| lapic);
 
-    let mut lapic = unsafe { Lapic::new(lapic_addr) };
-    // LAPIC.call_once(|| lapic);
+//     // SAFETY: It is assumed that the containing codebase does not use the PIC
+//     let pic_master = unsafe { Port::new(0x21) };
+//     let pic_slave = unsafe { Port::new(0xa1) };
+//     pic_master.write(0xffu8);
+//     pic_slave.write(0xffu8);
 
-    boot_stage::same_level("Disabling PIC");
-    // SAFETY: It is assumed that the containing codebase does not use the PIC
-    let pic_master = unsafe { Port::new(0x21) };
-    let pic_slave = unsafe { Port::new(0xa1) };
-    pic_master.write(0xffu8);
-    pic_slave.write(0xffu8);
+//     // create processor uid to lapic id map
+//     // let processor_lapic_map = PROCESSOR_LAPIC_MAP.call_once(|| {
+//     //     let mut map = Vec::new();
+//     //     for entry in madt.iter() {
+//     //         if let MadtDescriptor::LocalApic { processor, id, flags: _flags } = entry {
+//     //             map.push((processor, id));
+//     //         }
+//     //     }
+//     //     map
+//     // });
 
-    // create processor uid to lapic id map
-    // let processor_lapic_map = PROCESSOR_LAPIC_MAP.call_once(|| {
-    //     let mut map = Vec::new();
-    //     for entry in madt.iter() {
-    //         if let MadtDescriptor::LocalApic { processor, id, flags: _flags } = entry {
-    //             map.push((processor, id));
-    //         }
-    //     }
-    //     map
-    // });
+//     // we're the BSP
+//     let bsp_lapic_id = LocalApicId(lapic.read(LapicRegister::Id) as u8);
+//     let bsp_processor_uid = madt
+//         .iter()
+//         .find_map(|entry| {
+//             if let MadtDescriptor::LocalApic { processor, id, flags: _ } = entry && id == bsp_lapic_id {
+//                 Some(processor)
+//             } else {
+//                 None
+//             }
+//         })
+//         .unwrap();
 
-    // we're the BSP
-    let bsp_lapic_id = LocalApicId(lapic.read(LapicRegister::Id) as u8);
-    let bsp_processor_uid = madt
-        .iter()
-        .find_map(|entry| {
-            if let MadtDescriptor::LocalApic { processor, id, flags: _ } = entry && id == bsp_lapic_id {
-                Some(processor)
-            } else {
-                None
-            }
-        })
-        .unwrap();
+//     log::debug!("bootstrap {bsp_lapic_id:?}, {bsp_processor_uid:?}");
 
-    log::debug!("bootstrap {bsp_lapic_id:?}, {bsp_processor_uid:?}");
+//     for entry in madt.iter() {
+//         log::trace!("{entry:?}");
+//         match entry {
+//             MadtDescriptor::LocalApicNmi { processor, flags: _, lint: Lint(lint) } if processor == bsp_processor_uid || processor == ALL_PROCESSORS => {
+//                 let register = if lint == 0 { LapicRegister::LvtLint0 } else { LapicRegister::LvtLint1 };
+//                 interrupt_mgr.set_handler(interrupt::Vector::External(NMI_VECTOR), Some(|_state| {
+//                     panic!("hardware failure (NMI)");
+//                 })).unwrap();
+//                 let value = (0b100u32 << 8) | (NMI_VECTOR as u32); // NMI delivery mode. Vol 3A Fig 12-8
+//                 lapic.write(register, value);
+//             }
+//             _ => (),
+//         };
+//     }
 
-    boot_stage::same_level("Mapping basic interrupts");
-    for entry in madt.iter() {
-        log::trace!("{entry:?}");
-        match entry {
-            MadtDescriptor::LocalApicNmi { processor, flags: _, lint: Lint(lint) } if processor == bsp_processor_uid || processor == ALL_PROCESSORS => {
-                let register = if lint == 0 { LapicRegister::LvtLint0 } else { LapicRegister::LvtLint1 };
-                interrupt_mgr.set_handler(interrupt::Vector::External(NMI_VECTOR), Some(|_state| {
-                    panic!("hardware failure (NMI)");
-                })).unwrap();
-                let value = (0b100u32 << 8) | (NMI_VECTOR as u32); // NMI delivery mode. Vol 3A Fig 12-8
-                lapic.write(register, value);
-            }
-            _ => (),
-        };
-    }
+//     interrupt_mgr.set_handler(interrupt::Vector::External(SPURIOUS_INTR_VECTOR), Some(|_state| {
+//         log::warn!("spurious interrupt");
+//         false
+//     })).unwrap();
+//     lapic.write(LapicRegister::SpuriousIntr, 0x100 | (SPURIOUS_INTR_VECTOR as u32)); // bit 8: enable
 
-    boot_stage::same_level("Enabling LAPIC");
-    interrupt_mgr.set_handler(interrupt::Vector::External(SPURIOUS_INTR_VECTOR), Some(|_state| {
-        log::warn!("spurious interrupt");
-        false
-    })).unwrap();
-    lapic.write(LapicRegister::SpuriousIntr, 0x100 | (SPURIOUS_INTR_VECTOR as u32)); // bit 8: enable
-
-    // TODO: IOAPIC
-    boot_stage::end_level();
-}
+//     // TODO: IOAPIC
+// }

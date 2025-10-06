@@ -2,6 +2,7 @@
 
 use crate::target::current::{
     memmgr::*,
+    acpi::*,
 };
 
 use crate::target::current::interrupt as concrete;
@@ -65,7 +66,7 @@ pub enum Error {
 pub type Result<T> = core::result::Result<T, Error>;
 
 pub trait IntrMgr {
-    fn new(addr_space: &mut AddrSpace) -> Self;
+    fn new(addr_space: &mut AddrSpace, acpi: Option<&Acpi<'_>>) -> Self;
 
     /// Selects this interrupt manager as the active one for the CPU this method
     /// is executed on.

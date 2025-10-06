@@ -195,9 +195,10 @@ impl PageRangeHeader {
         }
     }
 
-    fn allocate_contiguous(&mut self, requested_pages: usize) -> Option<PhysAddr> {
+    fn allocate_contiguous(&mut self, requested_pages: usize, selector: impl Fn(PhysAddr) -> bool) -> Option<PhysAddr> {
         let mut page_idx = self.header_pages;
         let mut current_run: Option<(usize, usize)> = None;
+        let range_start = self.start().to_usize();
         let pages = self.pages;
         let bitmap = self.get_bitmap();
 
@@ -220,9 +221,12 @@ impl PageRangeHeader {
             }
 
             if let Some((start, length)) = current_run {
-                current_run = Some((start, length + 1))
+                current_run = Some((start, length + 1));
             } else {
-                current_run = Some((page_idx, 1))
+                let addr = PhysAddr::from_usize(range_start + (page_idx * PAGE_SIZE)).unwrap();
+                if selector(addr) {
+                    current_run = Some((page_idx, 1));
+                }
             }
             page_idx += 1;
         }
@@ -231,7 +235,7 @@ impl PageRangeHeader {
             for page in start .. (start + length) {
                 Self::bitmap_set(bitmap, page, true);
             }
-            let addr = PhysAddr::from_usize(self.start().to_usize() + (start * PAGE_SIZE)).unwrap();
+            let addr = PhysAddr::from_usize(range_start + (start * PAGE_SIZE)).unwrap();
             #[cfg(feature = "trace-pmm")]
             log::trace!("alloc_cont {addr:?}+{requested_pages:?} from range {:?}+{:?}", self.start(), self.pages);
             Some(addr)
@@ -378,9 +382,13 @@ impl super::PhysAlloc for GenericPhysAlloc {
     }
 
     fn allocate_contiguous(&mut self, pages: usize) -> interface::Result<PhysAddr> {
+        self.allocate_select(pages, |_| true)
+    }
+
+    fn allocate_select(&mut self, pages: usize, selector: impl Clone + Fn(PhysAddr) -> bool) -> interface::Result<concrete::PhysAddr> {
         self.ranges.get_all_ranges()
             .ok_or(interface::Error::OutOfMemory)?
-            .find_map(|range| range.allocate_contiguous(pages))
+            .find_map(|range| range.allocate_contiguous(pages, selector.clone()))
             .ok_or(interface::Error::OutOfMemory)
             .inspect(|_| {
                 let add_bytes = ByteSize(PAGE_SIZE * pages);

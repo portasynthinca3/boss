@@ -7,19 +7,10 @@ use bincode::{Encode, Decode};
 use core::arch::asm;
 
 pub use crate::target::interface::device::wall_clock::{
-    Duration as IfDuration,
+    Duration,
     WallClock as IfWallClock,
 };
 use crate::target::current::ll::io_port::Port;
-
-#[derive(Clone, Copy)]
-pub struct Duration(u128);
-impl IfDuration for Duration {
-    fn ps(self) -> u128 { self.0 }
-    fn ns(self) -> u64 { (self.0 / 1_000u128) as u64 }
-    fn us(self) -> u64 { (self.0 / 1_000_000u128) as u64 }
-    fn ms(self) -> u64 { (self.0 / 1_000_000_000u128) as u64 }
-}
 
 #[derive(Debug, Clone, Copy)]
 #[derive(Encode, Decode)]
@@ -115,15 +106,20 @@ impl IfWallClock for WallClock {
         1_000_000 / self.tsc_ticks_per_us
     }
 
-    fn abs_time(&self) -> impl IfDuration {
+    fn abs_time(&self) -> Duration {
         let ps = ((rdtsc_serializing() as u128) - (self.tsc_tick_offset as u128)) * 1_000_000u128 / (self.tsc_ticks_per_us as u128);
         Duration(ps)
     }
 
-    fn delta_time<T>(&self, f: impl FnOnce() -> T) -> (T, impl IfDuration) {
+    fn delta_time<T>(&self, f: impl FnOnce() -> T) -> (T, Duration) {
         let start = self.abs_time();
         let ret = f();
         let end = self.abs_time();
         (ret, Duration(end.ps() - start.ps()))
+    }
+
+    fn delay(&self, duration: Duration) {
+        let end = Duration(self.abs_time().0 + duration.0);
+        while self.abs_time() < end { }
     }
 }

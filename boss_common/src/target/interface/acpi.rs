@@ -131,7 +131,7 @@ impl Xsdt {
         ptr::metadata(self)
     }
 
-    pub fn iter(&self) -> XsdtIter {
+    pub fn iter(&self) -> XsdtIter<'_> {
         XsdtIter {
             position: 0,
             xsdt: self,
@@ -181,7 +181,7 @@ impl<'t> Acpi<'t> {
         Self { xsdt }
     }
 
-    pub fn find_table<T: Table + ?Sized>(&self) -> Option<&T> {
+    pub fn find_table<T: Table + ?Sized>(&self) -> Option<&'t T> {
         let addr = self.xsdt
             .iter()
             .find(|(header, _addr)| str::from_utf8(&header.signature).unwrap() == T::SIGNATURE)?

@@ -183,7 +183,7 @@ impl<'d> ElfFile<'d> {
         })
     }
 
-    fn parse_program_entry(&self, index: usize) -> Option<ElfProgramBitLoadInfo> {
+    fn parse_program_entry(&self, index: usize) -> Option<ElfProgramBitLoadInfo<'_>> {
         let raw_data = &self.program_table[
             (index * self.program_entry_size)
             ..
