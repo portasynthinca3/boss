@@ -84,7 +84,12 @@ pub trait SmpManager<'m, 'a: 'm> {
 
     fn cpus(&self) -> impl Iterator<Item = CpuId>;
 
-    fn initialize_all_aps(&mut self) -> Result<()>;
+    fn initialize_all_aps(
+        &mut self,
+        addr_space: &AddrSpace<'_>,
+        alloc: &Mutex<PhysAlloc>,
+        main: extern "C" fn() -> !,
+    ) -> Result<()>;
 
     unsafe fn messenger<T: Share>(&mut self) -> Result<concrete::SmpMessenger<T>>;
 }

@@ -52,6 +52,7 @@ bosbaima: build_dir
 
 # Main executable (emulator)
 emu: build_dir
+    nasm -f bin boss_common/src/target/x86_64_uefi/ap_boot.asm -o .build/ap_boot.bin
     cargo build {{cargo_flags}} --features {{emu_features}} --target {{emu_target}} -p boss_emu
     cp target/{{emu_target}}/{{profile_dir}}/boss_emu .build/boss_emu.fat.elf
     strip -s .build/boss_emu.fat.elf -o .build/boss_emu.elf

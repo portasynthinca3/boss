@@ -73,6 +73,7 @@ use crate::target::interface::memmgr::{
     AllocReturn,
     Result,
     Error,
+    Caching,
 };
 use crate::target::current::memmgr::{
     PhysAddr,
@@ -220,6 +221,15 @@ impl TableAttrs {
             cache: 0,
             execute: access.execute,
             global: false,
+        }
+    }
+
+    fn to_access(self) -> Access {
+        Access {
+            write: self.write,
+            user: self.user,
+            execute: self.execute,
+            caching: Caching::Uncacheable,
         }
     }
 
@@ -656,6 +666,10 @@ impl<'alloc> AddrSpace<'alloc> {
         *slot = Some(range);
         Ok(())
     }
+
+    pub(crate) fn get_cr3(&self) -> u64 {
+        self.cr3.into()
+    }
 }
 
 impl<'alloc> IfAddrSpace<'alloc> for AddrSpace<'alloc> {
@@ -780,6 +794,19 @@ impl<'alloc> IfAddrSpace<'alloc> for AddrSpace<'alloc> {
             buffer: Default::default(),
             overflow: false,
         }
+    }
+
+    fn copy_into(&self, other: &mut Self, range: &RangeInclusive<VirtAddr>) -> Result<()> {
+        let mut guard = other.modify();
+        guard.unmap_range(range.clone())?;
+
+        self.iterate_over_range(range.clone(), |table, kind, _addr| {
+            if kind != TableKind::Page { return; }
+            let Some(table) = table else { return };
+            guard.map_range(table.lowest_addr, table.phys_addr, 1, table.attrs.to_access(), AllocReturn::Start).unwrap();
+        }).unwrap();
+
+        Ok(())
     }
 }
 

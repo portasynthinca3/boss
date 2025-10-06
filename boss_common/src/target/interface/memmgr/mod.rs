@@ -379,6 +379,8 @@ pub trait AddrSpace<'alloc>: Debug + Sized {
 
     /// Creates a guard that allows modifications to the [AddrSpace].
     fn modify(&mut self) -> impl AddrSpaceGuard<'alloc>;
+
+    fn copy_into(&self, other: &mut Self, range: &RangeInclusive<concrete::VirtAddr>) -> Result<()>;
 }
 
 /// What address to return for virtual allocations

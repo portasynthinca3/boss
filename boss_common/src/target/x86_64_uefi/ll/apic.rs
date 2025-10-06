@@ -84,7 +84,7 @@ impl Madt {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, FromRepr)]
-enum MadtDescriptorType {
+pub enum MadtDescriptorType {
     LocalApic = 0,
     IoApic = 1,
     InterruptSourceOverride = 2,
@@ -194,7 +194,7 @@ impl<'tab> Iterator for MadtIter<'tab> {
 /// Local APIC registers
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[allow(dead_code)]
-enum LapicRegister {
+pub enum LapicRegister {
     Id = 0x020,
     Version = 0x030,
     TaskPriority = 0x080,
@@ -245,12 +245,14 @@ enum LapicRegister {
 }
 
 /// Inter-Processor Interrupt type
+#[allow(unused)]
 pub enum ApicIpi {
     Init,
     Start(u8),
     Fixed(u8),
 }
 
+#[allow(unused)]
 pub enum ApicIpiDest {
     Single(u32),
     AllWithSelf,

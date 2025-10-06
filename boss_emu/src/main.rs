@@ -4,7 +4,6 @@
     never_type,
     if_let_guard,
     generic_const_exprs,
-    let_chains,
 )]
 #![allow(incomplete_features)]
 
@@ -23,7 +22,6 @@ use boss_common::target::current::{
     memmgr::*,
     device::wall_clock::*,
     interrupt::*,
-    acpi::*,
     smp::*,
 };
 
@@ -80,6 +78,7 @@ extern "C" fn _start(params_location: usize, params_size: usize) -> ! {
     if acpi.is_none() { log::debug!("no ACPI") };
 
     log::debug!("interrupts init");
+    #[allow(unused_mut)]
     let mut interrupt_mgr = IntrMgr::new(&mut addr_space, acpi.as_ref());
     unsafe { interrupt_mgr.set_as_current(); }
 
@@ -97,7 +96,7 @@ extern "C" fn _start(params_location: usize, params_size: usize) -> ! {
 
     log::debug!("smp init");
     let mut smp = unsafe { SmpManager::new(&interrupt_mgr, acpi.as_ref(), &mut addr_space, phys_alloc, wall_clock) };
-    smp.initialize_all_aps();
+    smp.initialize_all_aps(&addr_space, phys_alloc, ap_start).unwrap();
 
     log::debug!("heap alloc init");
     initialize_global_alloc(addr_space.take_portion(&MemoryParameters::range(Region::LocalHeap)).unwrap());
@@ -106,4 +105,9 @@ extern "C" fn _start(params_location: usize, params_size: usize) -> ! {
     let data_image = unsafe { core::slice::from_raw_parts(data_image.0.to_ptr(), data_image.1) };
     let base_image = TarFile::new(data_image);
     vm::init(&base_image).unwrap()
+}
+
+extern "C" fn ap_start() -> ! {
+    log::debug!("hello from AP!");
+    loop { }
 }

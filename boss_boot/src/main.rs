@@ -56,7 +56,7 @@ const PAGE_SIZE: usize = MemoryParameters::PAGE_SIZE;
 fn init_virt_memmgr(
     alloc: &Mutex<PhysAlloc>,
     mem_map: impl Iterator<Item = PhysMemRange>
-) -> core::result::Result<AddrSpace, target::interface::memmgr::Error> {
+) -> core::result::Result<AddrSpace<'_>, target::interface::memmgr::Error> {
     let mut addr_space = AddrSpace::new(alloc)?;
     let mut guard = addr_space.modify();
 
