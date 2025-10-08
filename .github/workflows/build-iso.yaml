@@ -19,7 +19,7 @@ jobs:
             with:
                 otp-version: "28"
           - run: cargo install just
-          - run: sudo apt install -y coreutils binutils mtools qpdf
+          - run: sudo apt install -y coreutils binutils mtools qpdf nasm
           - run: just iso
           - uses: "marvinpinto/action-automatic-releases@latest"
             with:
