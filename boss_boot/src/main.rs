@@ -222,6 +222,7 @@ fn generic_entry(firmware: UninitializedFirmware) -> ! {
         Access { execute: false, ..Default::default() },
         AllocReturn::End,
     ).unwrap();
+    let stack_top = VirtAddr::from_usize(stack_top.to_usize() - 8).unwrap();
 
     // compose parameters to pass to executable
     let params_range = MemoryParameters::range(Region::EmuParams);

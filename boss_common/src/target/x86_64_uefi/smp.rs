@@ -239,6 +239,7 @@ impl<'m, 'a> IfSmpManager<'m, 'a> for SmpManager<'m, 'a> {
             let stack = MemoryParameters::range(Region::LocalStack);
             let stk_pages = (stack.end().to_usize() - stack.start().to_usize()).div_ceil(PAGE_SIZE);
             let stack = ap_space.modify().allocate_range(*stack.start(), stk_pages, Default::default(), AllocReturn::End).unwrap();
+            let stack = VirtAddr::from_usize(stack.to_usize() - 8).unwrap();
 
             status_blk.configure_arguments(ap_space, stack, main);
             status_blk.issue_setup_command();
