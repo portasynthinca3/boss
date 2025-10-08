@@ -209,7 +209,7 @@ impl PageRangeHeader {
             let unit = page_idx / BM_UNIT_BITS;
             let bit = page_idx % BM_UNIT_BITS;
             if (bit == 0) && (bitmap[unit] == BM_ALL_BITS_SET) {
-                page_idx = page_idx.div_ceil(BM_UNIT_BITS) * BM_UNIT_BITS;
+                page_idx = (page_idx + 1).div_ceil(BM_UNIT_BITS) * BM_UNIT_BITS;
                 current_run = None;
                 continue;
             }

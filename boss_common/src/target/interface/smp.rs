@@ -1,5 +1,7 @@
 //! Symmetric Multiprocessing interface
 
+use core::fmt::Display;
+
 use crate::target::current::{
     interrupt::*,
     memmgr::*,
@@ -64,6 +66,12 @@ pub type Result<T> = core::result::Result<T, Error>;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct CpuId(pub(crate) u32);
 
+impl Display for CpuId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Destination {
     Unicast(CpuId),
@@ -71,13 +79,12 @@ pub enum Destination {
     BroadcastWithoutSelf,
 }
 
-pub trait SmpManager<'m, 'a: 'm> {
+pub trait SmpManager<'m, 'a> {
     unsafe fn new(
         intr: &'m IntrMgr,
         acpi: Option<&Acpi<'a>>,
-        addr_space: &mut AddrSpace<'_>,
-        phys_alloc: &Mutex<PhysAlloc>,
         clock: &'m WallClock,
+        addr_space: &mut AddrSpace<'_>,
     ) -> Self;
 
     fn this_cpu(&self) -> CpuId;
@@ -86,12 +93,24 @@ pub trait SmpManager<'m, 'a: 'm> {
 
     fn initialize_all_aps(
         &mut self,
-        addr_space: &AddrSpace<'_>,
+        addr_space: &mut AddrSpace<'_>,
         alloc: &Mutex<PhysAlloc>,
         main: extern "C" fn() -> !,
     ) -> Result<()>;
 
     unsafe fn messenger<T: Share>(&mut self) -> Result<concrete::SmpMessenger<T>>;
+}
+
+pub trait SmpContext {
+    fn maybe_get() -> Option<&'static Self>;
+
+    fn get() -> &'static Self {
+        Self::maybe_get().unwrap()
+    }
+
+    fn create_record<T: 'static>(&self, value: T);
+
+    fn find_record<T: 'static>(&self) -> Option<&'static T>;
 }
 
 pub trait SmpMessenger<T: Share> {

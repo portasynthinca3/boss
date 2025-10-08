@@ -334,14 +334,15 @@ impl Drop for LinkedListAllocator<'_> {
     }
 }
 
+type OurAlloc = LateLocalAlloc<LinkedListAllocator<'static>>;
+
 /// The default global allocator
 #[global_allocator]
-static HEAP_ALLOCATOR: LateAllocator<LinkedListAllocator> = LateAllocator::new();
+static HEAP_ALLOCATOR: OurAlloc = OurAlloc::new();
 
 /// Initializes the default global allocator
 pub fn initialize_global_alloc(addr_space: AddrSpace<'static>) {
     let allocator = LinkedListAllocator::new(addr_space)
         .expect("failed to create global allocator");
-    HEAP_ALLOCATOR.initialize(allocator);
+    OurAlloc::initialize(allocator);
 }
-

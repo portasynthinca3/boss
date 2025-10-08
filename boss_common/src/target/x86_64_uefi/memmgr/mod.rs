@@ -15,7 +15,7 @@ pub use interface::{
     Access,
     AllocReturn,
     LinkedListAllocator,
-    LateAllocator,
+    LateLocalAlloc,
     initialize_global_alloc,
     PhysAlloc as IfPhysAlloc,
     AddrSpace as IfAddrSpace,
@@ -77,7 +77,8 @@ impl interface::MemoryParameters for MemoryParameters {
         (NifOrIdentity,  VirtAddr(0x0000_0000_0000_0000) ..= VirtAddr(0x0000_7fff_ffff_ffff)), // 128 TiB
         (LinearPhysical, VirtAddr(0xffff_8000_0000_0000) ..= VirtAddr(0xffff_bfff_ffff_ffff)), // 64 TiB
         (EmulatorImage,  VirtAddr(0xffff_c000_0000_0000) ..= VirtAddr(0xffff_cfff_fffe_ffff)), // 16 TiB - 64 KiB
-        (EmuParams,      VirtAddr(0xffff_cfff_ffff_0000) ..= VirtAddr(0xffff_cfff_ffff_ffff)), // 64 KiB
+        (LocalContext,   VirtAddr(0xffff_cfff_ffff_0000) ..= VirtAddr(0xffff_cfff_ffff_efff)), // 60 KiB
+        (EmuParams,      VirtAddr(0xffff_cfff_ffff_f000) ..= VirtAddr(0xffff_cfff_ffff_ffff)), // 4 KiB
         (BaseImage,      VirtAddr(0xffff_d000_0000_0000) ..= VirtAddr(0xffff_dfff_ffff_ffff)), // 16 TiB
         (LocalStack,     VirtAddr(0xffff_e000_0000_0000) ..= VirtAddr(0xffff_e000_000f_ffff)), // 1 MiB
         (LocalHeap,      VirtAddr(0xffff_e000_0010_0000) ..= VirtAddr(0xffff_efff_ffff_ffff)), // 16 TiB - 1 MiB

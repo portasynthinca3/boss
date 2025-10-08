@@ -11,8 +11,7 @@ extern crate alloc;
 
 pub mod vm;
 
-use core::{arch::asm, panic::PanicInfo};
-use boss_common::target::interface::firmware::FirmwareServices;
+use core::panic::PanicInfo;
 use spin::{Mutex, Once};
 
 use boss_common::emu_params::EmuParams;
@@ -23,24 +22,29 @@ use boss_common::target::current::{
     device::wall_clock::*,
     interrupt::*,
     smp::*,
+    cpu::*,
+    firmware::*,
+    acpi::*,
 };
 
 #[cfg(feature = "run-tests")]
 use boss_common::tests::{self, TestEnv};
 
+static WALL_CLOCK: Once<WallClock> = Once::new();
+static LOGGER: Once<SerialLogger> = Once::new();
+static PHYS_ALLOC: Once<Mutex<PhysAlloc>> = Once::new();
+static ACPI: Once<Option<Acpi>> = Once::new();
+
 #[panic_handler]
 fn panic_handler(info: &PanicInfo) -> ! {
+    LOGGER.get().unwrap().force_unlock();
     log::error!("EMULATOR PANIC at {}:", info.location().unwrap().clone());
     log::error!("{}", info.message());
     log::error!("runtime_cfg: {:?}", runtime_cfg::get());
     loop {
-        unsafe { asm!("hlt"); }
+        Cpu::wait_for_interrupt();
     }
 }
-
-static WALL_CLOCK: Once<WallClock> = Once::new();
-static LOGGER: Once<SerialLogger> = Once::new();
-static PHYS_ALLOC: Once<Mutex<PhysAlloc>> = Once::new();
 
 /// Entry point. Performs initialization of all the components
 #[unsafe(no_mangle)]
@@ -75,6 +79,7 @@ extern "C" fn _start(params_location: usize, params_size: usize) -> ! {
 
     log::debug!("acpi init");
     let acpi = unsafe { firmware.take_acpi().ok() };
+    let acpi = ACPI.call_once(move || acpi);
     if acpi.is_none() { log::debug!("no ACPI") };
 
     log::debug!("interrupts init");
@@ -95,8 +100,8 @@ extern "C" fn _start(params_location: usize, params_size: usize) -> ! {
     }
 
     log::debug!("smp init");
-    let mut smp = unsafe { SmpManager::new(&interrupt_mgr, acpi.as_ref(), &mut addr_space, phys_alloc, wall_clock) };
-    smp.initialize_all_aps(&addr_space, phys_alloc, ap_start).unwrap();
+    let mut smp = unsafe { SmpManager::new(&interrupt_mgr, acpi.as_ref(), wall_clock, &mut addr_space) };
+    smp.initialize_all_aps(&mut addr_space, phys_alloc, ap_start).unwrap();
 
     log::debug!("heap alloc init");
     initialize_global_alloc(addr_space.take_portion(&MemoryParameters::range(Region::LocalHeap)).unwrap());
@@ -107,7 +112,26 @@ extern "C" fn _start(params_location: usize, params_size: usize) -> ! {
     vm::init(&base_image).unwrap()
 }
 
+#[allow(unused_variables)]
 extern "C" fn ap_start() -> ! {
-    log::debug!("hello from AP!");
-    loop { }
+    log::trace!("AP entry");
+
+    let phys_alloc = PHYS_ALLOC.get().unwrap();
+    let wall_clock = WALL_CLOCK.get().unwrap();
+    let acpi = ACPI.get().unwrap();
+
+    let mut addr_space = unsafe { AddrSpace::get_current(phys_alloc) };
+
+    let mut interrupt_mgr = IntrMgr::new(&mut addr_space, acpi.as_ref());
+    unsafe { interrupt_mgr.set_as_current(); }
+
+    let mut smp = unsafe { SmpManager::new(&interrupt_mgr, acpi.as_ref(), wall_clock, &mut addr_space) };
+
+    initialize_global_alloc(addr_space.take_portion(&MemoryParameters::range(Region::LocalHeap)).unwrap());
+
+    log::trace!("AP fully initialized");
+
+    loop {
+        Cpu::wait_for_interrupt();
+    }
 }

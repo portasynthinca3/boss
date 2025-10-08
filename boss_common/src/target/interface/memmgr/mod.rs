@@ -17,14 +17,18 @@
 use bincode::{Encode, Decode};
 use core::alloc::GlobalAlloc;
 use core::fmt::{self, Formatter, Debug};
+use core::marker::PhantomData;
 use core::ops::Deref;
 use core::{ops::RangeInclusive, mem::variant_count, ptr::{self, NonNull}};
 use core::alloc::{Allocator, Layout};
 use alloc::borrow::ToOwned;
-use spin::{Mutex, Once};
+use spin::Mutex;
 
 use crate::util::byte_size::ByteSize;
-use crate::target::current::memmgr as concrete;
+use crate::target::current::{
+    memmgr as concrete,
+    smp::*,
+};
 
 pub mod phys;
 pub mod heap;
@@ -187,6 +191,8 @@ pub enum Region {
     NifOrIdentity,
     /// Data passed from bootloader to emulator
     EmuParams,
+    /// CPU-local context
+    LocalContext,
     /// Emulator stack
     LocalStack,
     /// Emulator heap
@@ -433,29 +439,36 @@ pub trait AddrSpaceGuard<'alloc>: Deref<Target = concrete::AddrSpace<'alloc>> {
 // Heap memory
 // ===========
 
-/// A heap allocator that becomes available halfway into the program
-pub struct LateAllocator<T: Allocator>(Once<T>);
+/// A heap allocator that becomes available halfway into the program and is
+/// stored in an `SmpContext`
+pub struct LateLocalAlloc<T: Allocator + 'static>(PhantomData<T>);
 
-impl<T: Allocator> LateAllocator<T> {
+struct LocalAllocRecord<T: Allocator + 'static>(T);
+
+impl<T: Allocator> LateLocalAlloc<T> {
     pub(crate) const fn new() -> Self {
-        Self(Once::new())
+        Self(PhantomData)
     }
 
-    pub(crate) fn initialize(&self, alloc: T) {
-        self.0.call_once(move || alloc);
+    pub(crate) fn initialize(alloc: T) {
+        SmpContext::get().create_record(LocalAllocRecord(alloc));
+    }
+
+    fn get() -> &'static LocalAllocRecord<T> {
+        SmpContext::get().find_record().unwrap()
     }
 }
 
-unsafe impl<T: Allocator> GlobalAlloc for LateAllocator<T> {
+unsafe impl<T: Allocator> GlobalAlloc for LateLocalAlloc<T> {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let allocator = self.0.get().unwrap();
+        let allocator = &Self::get().0;
         match allocator.allocate(layout) {
             Err(_) => ptr::null_mut::<u8>(),
             Ok(p) => p.as_mut_ptr(),
         }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        let allocator = self.0.get().unwrap();
+        let allocator = &Self::get().0;
         if let Some(ptr) = NonNull::new(ptr) {
             allocator.deallocate(ptr, layout);
         }
